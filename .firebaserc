@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "bidding-costestimate"
+  },
+  "targets": {
+    "bidding-costestimate": {
+      "hosting": {
+        "site-01": [
+          "cmg-al-estimation"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
