@@ -84,18 +84,18 @@ const DEFAULT_PROJECT_INFO = {
   duration: 12,
 };
 
+const DEFAULT_BOND_ITEMS = [
+  { id: 1, name: "Bid bond", contractPct: 5, premiumPct: 0, interestPctYear: 2, months: 3 },
+  { id: 2, name: "Performance bond", contractPct: 10, premiumPct: 0, interestPctYear: 2.5, months: 48 },
+  { id: 3, name: "Advance bond", contractPct: 15, premiumPct: 2, interestPctYear: 2, months: 48 },
+  { id: 4, name: "Warranty bond", contractPct: 5, premiumPct: 0, interestPctYear: 2, months: 12 },
+];
+
 const DEFAULT_FINANCIALS = {
   enabled: true,
-  advanceBondEnabled: true,
-  performBondEnabled: true,
-  warrantyBondEnabled: true,
+  contractAmount: 0,
+  bondItems: DEFAULT_BOND_ITEMS.map((b) => ({ ...b })),
   taxEnabled: true,
-  advanceBondPct: 10,
-  advanceBondMos: 6,
-  performBondPct: 10,
-  performBondMos: 12,
-  warrantyBondPct: 5,
-  warrantyBondMos: 24,
   overheadProfitPct: 15,
 };
 
@@ -678,9 +678,6 @@ export default function CostEstimator() {
     const fin = currentBidding?.financials;
     if (!currentBidding || fin?.enabled === false)
       return {
-        advBondCost: 0,
-        perfBondCost: 0,
-        warrBondCost: 0,
         totalBankCharge: 0,
         insuranceCost: 0,
         taxCost: 0,
@@ -689,40 +686,26 @@ export default function CostEstimator() {
         subTotalBeforeOH: 0,
       };
 
-    // Base for Bonds (Direct + Time Based Indirect)
+    // Contract Amount from user input (or fallback to baseCost)
     const baseCost = directCostSummary.grandTotal + timeBasedIndirect.subTotal;
-    const bankRatePerYear = 0.02;
-    const advBondCost =
-      fin.advanceBondEnabled !== false
-        ? baseCost *
-        (safeFloat(fin.advanceBondPct) / 100) *
-        (safeFloat(fin.advanceBondMos) / 12) *
-        bankRatePerYear
-        : 0;
-    const perfBondCost =
-      fin.performBondEnabled !== false
-        ? baseCost *
-        (safeFloat(fin.performBondPct) / 100) *
-        (safeFloat(fin.performBondMos) / 12) *
-        bankRatePerYear
-        : 0;
-    const warrBondCost =
-      fin.warrantyBondEnabled !== false
-        ? baseCost *
-        (safeFloat(fin.warrantyBondPct) / 100) *
-        (safeFloat(fin.warrantyBondMos) / 12) *
-        bankRatePerYear
-        : 0;
+    const contractAmt = safeFloat(fin.contractAmount) || baseCost;
 
-    const totalBankCharge = advBondCost + perfBondCost + warrBondCost;
+    // Calculate bond costs from bondItems
+    // Premium and Interest are calculated from Contract Amount directly
+    const bondItems = fin.bondItems || [];
+    const totalBankCharge = bondItems.reduce((sum: number, item: any) => {
+      const bondAmount = contractAmt * (safeFloat(item.contractPct) / 100);
+      const premiumAmount = bondAmount * (safeFloat(item.premiumPct) / 100);
+      const interestAmount = bondAmount * (safeFloat(item.interestPctYear) / 100) * (safeFloat(item.months) / 12);
+      return sum + premiumAmount + interestAmount;
+    }, 0);
     const insuranceCost = 0;
 
-    // Tax = 0.1% of (Direct + TimeBased + Bank Charges)
+    // Tax = 0.1% of Contract Amount
+    const taxCost = fin.taxEnabled !== false ? contractAmt * 0.001 : 0;
     const costForTaxBase = baseCost + totalBankCharge + insuranceCost;
-    const taxCost = fin.taxEnabled !== false ? costForTaxBase * 0.001 : 0;
 
     // New SubTotal (Construction Cost BEFORE OH&P)
-    // This is "Total Direct" + "Total Indirect (TimeBased+Bank+Tax)"
     const subTotalBeforeOH = costForTaxBase + taxCost;
 
     // OH & Profit = % of SubTotal
@@ -734,14 +717,11 @@ export default function CostEstimator() {
       timeBasedIndirect.subTotal + totalBankCharge + insuranceCost + taxCost;
 
     return {
-      advBondCost,
-      perfBondCost,
-      warrBondCost,
       totalBankCharge,
       insuranceCost,
       taxCost,
       ohProfitCost,
-      grandTotalIndirect: totalIndirectNoOH, // Renamed logical concept: this is now Indirect WITHOUT OH
+      grandTotalIndirect: totalIndirectNoOH,
       subTotalBeforeOH,
     };
   }, [
@@ -937,7 +917,7 @@ export default function CostEstimator() {
       alert("กรุณาเพิ่มรายการ BOQ ก่อนทำการประเมิน");
       return;
     }
-    const apiKey = process.env.REACT_APP_GEMINI_API_KEY || "";
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
     setIsAnalyzing(true);
     try {
       const itemsListString = currentBidding.directItems
@@ -2045,223 +2025,202 @@ export default function CostEstimator() {
           }
         >
           <div
-            className={`grid grid-cols-1 md:grid-cols-2 gap-8 transition-opacity duration-200 ${currentBidding.financials.enabled
+            className={`transition-opacity duration-200 ${currentBidding.financials.enabled
               ? ""
               : "opacity-50 pointer-events-none grayscale"
               }`}
           >
-            <div className="space-y-4">
-              <h4 className="font-semibold text-slate-700 border-b pb-2">
-                Bank Bond Charges (Rate 2%/Year)
-              </h4>
-              <div
-                className={`flex items-center gap-2 text-sm ${currentBidding.financials.advanceBondEnabled !== false
-                  ? ""
-                  : "opacity-50"
-                  }`}
-              >
-                <button
-                  onClick={() =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      advanceBondEnabled:
-                        !currentBidding.financials.advanceBondEnabled,
-                    })
-                  }
-                  className={`p-1 rounded-full ${currentBidding.financials.advanceBondEnabled !== false
-                    ? "text-emerald-600"
-                    : "text-slate-400"
-                    }`}
-                >
-                  {currentBidding.financials.advanceBondEnabled !== false ? (
-                    <ToggleRight size={18} />
-                  ) : (
-                    <ToggleLeft size={18} />
-                  )}
-                </button>
-                <span className="w-28">Advance Bond:</span>
-                <input
-                  disabled={
-                    currentBidding.financials.advanceBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.advanceBondPct}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      advanceBondPct: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                % <span>นาน</span>{" "}
-                <input
-                  disabled={
-                    currentBidding.financials.advanceBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.advanceBondMos}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      advanceBondMos: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                เดือน
-              </div>
-              <div
-                className={`flex items-center gap-2 text-sm ${currentBidding.financials.performBondEnabled !== false
-                  ? ""
-                  : "opacity-50"
-                  }`}
-              >
-                <button
-                  onClick={() =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      performBondEnabled:
-                        !currentBidding.financials.performBondEnabled,
-                    })
-                  }
-                  className={`p-1 rounded-full ${currentBidding.financials.performBondEnabled !== false
-                    ? "text-emerald-600"
-                    : "text-slate-400"
-                    }`}
-                >
-                  {currentBidding.financials.performBondEnabled !== false ? (
-                    <ToggleRight size={18} />
-                  ) : (
-                    <ToggleLeft size={18} />
-                  )}
-                </button>
-                <span className="w-28">Performance Bond:</span>
-                <input
-                  disabled={
-                    currentBidding.financials.performBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.performBondPct}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      performBondPct: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                % <span>นาน</span>{" "}
-                <input
-                  disabled={
-                    currentBidding.financials.performBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.performBondMos}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      performBondMos: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                เดือน
-              </div>
-              <div
-                className={`flex items-center gap-2 text-sm ${currentBidding.financials.warrantyBondEnabled !== false
-                  ? ""
-                  : "opacity-50"
-                  }`}
-              >
-                <button
-                  onClick={() =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      warrantyBondEnabled:
-                        !currentBidding.financials.warrantyBondEnabled,
-                    })
-                  }
-                  className={`p-1 rounded-full ${currentBidding.financials.warrantyBondEnabled !== false
-                    ? "text-emerald-600"
-                    : "text-slate-400"
-                    }`}
-                >
-                  {currentBidding.financials.warrantyBondEnabled !== false ? (
-                    <ToggleRight size={18} />
-                  ) : (
-                    <ToggleLeft size={18} />
-                  )}
-                </button>
-                <span className="w-28">Warranty Bond:</span>
-                <input
-                  disabled={
-                    currentBidding.financials.warrantyBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.warrantyBondPct}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      warrantyBondPct: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                % <span>นาน</span>{" "}
-                <input
-                  disabled={
-                    currentBidding.financials.warrantyBondEnabled === false
-                  }
-                  type="number"
-                  value={currentBidding.financials.warrantyBondMos}
-                  onChange={(e) =>
-                    setFinancials({
-                      ...currentBidding.financials,
-                      warrantyBondMos: safeFloat(e.target.value),
-                    })
-                  }
-                  className="w-16 border p-1 rounded text-center"
-                />{" "}
-                เดือน
-              </div>
+            {/* Contract Amount */}
+            <div className="flex items-center gap-3 mb-4">
+              <span className="font-semibold text-slate-700 whitespace-nowrap">Contract</span>
+              <input
+                type="text"
+                value={
+                  currentBidding.financials.contractAmount
+                    ? safeFloat(currentBidding.financials.contractAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                    : ""
+                }
+                placeholder={(directCostSummary.grandTotal + timeBasedIndirect.subTotal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                onFocus={(e) => e.target.select()}
+                onChange={(e) =>
+                  setFinancials({
+                    ...currentBidding.financials,
+                    contractAmount: safeFloat(e.target.value.replace(/,/g, "")),
+                  })
+                }
+                className="w-52 border-2 border-orange-300 bg-orange-50 p-2 rounded text-right font-medium focus:border-orange-500 focus:outline-none"
+              />
+              <span className="text-slate-500 font-medium">THB</span>
             </div>
-            <div className="space-y-4">
-              <h4 className="font-semibold text-slate-700 border-b pb-2">
-                Tax Only
-              </h4>
-              <div
-                className={`flex items-center justify-between text-sm ${currentBidding.financials.taxEnabled !== false
-                  ? ""
-                  : "opacity-50"
-                  }`}
-              >
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() =>
-                      setFinancials({
-                        ...currentBidding.financials,
-                        taxEnabled: !currentBidding.financials.taxEnabled,
-                      })
-                    }
-                    className={`p-1 rounded-full ${currentBidding.financials.taxEnabled !== false
-                      ? "text-emerald-600"
-                      : "text-slate-400"
-                      }`}
-                  >
-                    {currentBidding.financials.taxEnabled !== false ? (
-                      <ToggleRight size={18} />
-                    ) : (
-                      <ToggleLeft size={18} />
-                    )}
-                  </button>
-                  <span>Tax (อากรแสตมป์ 0.1%):</span>
-                </div>
-                <span className="font-medium">
-                  {formatTHB(financialIndirect.taxCost)}
-                </span>
+
+            {/* + Add Item */}
+            <button
+              onClick={() => {
+                const items = currentBidding.financials.bondItems || [];
+                const maxId = items.reduce((m: number, b: any) => Math.max(m, b.id || 0), 0);
+                setFinancials({
+                  ...currentBidding.financials,
+                  bondItems: [
+                    ...items,
+                    { id: maxId + 1, name: "New bond", contractPct: 0, premiumPct: 0, interestPctYear: 2, months: 12 },
+                  ],
+                });
+              }}
+              className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800 font-medium mb-3"
+            >
+              <Plus size={16} /> Add item
+            </button>
+
+            {/* Bond Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse border border-gray-400">
+                <thead>
+                  <tr>
+                    <th rowSpan={2} className="border border-gray-400 bg-white px-2 py-1 w-8">Item</th>
+                    <th colSpan={3} className="border border-gray-400 bg-white px-2 py-1 text-center">Type of Bond</th>
+                    <th colSpan={2} className="border border-gray-400 bg-green-100 px-2 py-1 text-center">Premium front free</th>
+                    <th colSpan={3} className="border border-gray-400 bg-orange-100 px-2 py-1 text-center">Interest</th>
+                    <th rowSpan={2} className="border border-gray-400 bg-white px-2 py-1 text-center w-28">Total</th>
+                    <th rowSpan={2} className="border border-gray-400 bg-white px-1 py-1 w-8"></th>
+                  </tr>
+                  <tr>
+                    <th className="border border-gray-400 bg-white px-2 py-1 text-center"></th>
+                    <th className="border border-gray-400 bg-white px-2 py-1 text-center">% of Contract</th>
+                    <th className="border border-gray-400 bg-white px-2 py-1 text-center">Amount</th>
+                    <th className="border border-gray-400 bg-green-100 px-2 py-1 text-center">%</th>
+                    <th className="border border-gray-400 bg-green-100 px-2 py-1 text-center">Amount</th>
+                    <th className="border border-gray-400 bg-orange-100 px-2 py-1 text-center">%/year</th>
+                    <th className="border border-gray-400 bg-orange-100 px-2 py-1 text-center">Nos. Month</th>
+                    <th className="border border-gray-400 bg-orange-100 px-2 py-1 text-center">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(currentBidding.financials.bondItems || []).map((item: any, idx: number) => {
+                    const contractAmt = safeFloat(currentBidding.financials.contractAmount) || (directCostSummary.grandTotal + timeBasedIndirect.subTotal);
+                    const bondAmount = contractAmt * (safeFloat(item.contractPct) / 100);
+                    const premiumAmount = bondAmount * (safeFloat(item.premiumPct) / 100);
+                    const interestAmount = bondAmount * (safeFloat(item.interestPctYear) / 100) * (safeFloat(item.months) / 12);
+                    const rowTotal = premiumAmount + interestAmount;
+
+                    const updateBondItem = (field: string, value: any) => {
+                      const items = [...(currentBidding.financials.bondItems || [])];
+                      items[idx] = { ...items[idx], [field]: value };
+                      setFinancials({ ...currentBidding.financials, bondItems: items });
+                    };
+
+                    return (
+                      <tr key={item.id}>
+                        <td className="border border-gray-400 px-2 py-1 text-center">{idx + 1}</td>
+                        {/* Name + % of Contract + Amount */}
+                        <td className="border border-gray-400 px-1 py-1">
+                          <input
+                            type="text"
+                            value={item.name}
+                            onChange={(e) => updateBondItem("name", e.target.value)}
+                            className="w-full bg-transparent focus:outline-none px-1"
+                          />
+                        </td>
+                        <td className="border border-gray-400 px-1 py-1">
+                          <input
+                            type="number"
+                            value={item.contractPct}
+                            onChange={(e) => updateBondItem("contractPct", safeFloat(e.target.value))}
+                            className="w-16 border border-orange-300 bg-orange-50 p-1 rounded text-center focus:border-orange-500 focus:outline-none"
+                          />
+                        </td>
+                        <td className="border border-gray-400 px-2 py-1 text-right font-mono">
+                          {bondAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        {/* Premium */}
+                        <td className="border border-gray-400 px-1 py-1 bg-green-50">
+                          <input
+                            type="number"
+                            value={item.premiumPct}
+                            onChange={(e) => updateBondItem("premiumPct", safeFloat(e.target.value))}
+                            className="w-14 border border-orange-300 bg-orange-50 p-1 rounded text-center focus:border-orange-500 focus:outline-none"
+                          />
+                        </td>
+                        <td className="border border-gray-400 px-2 py-1 text-right font-mono bg-green-50">
+                          {premiumAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        {/* Interest */}
+                        <td className="border border-gray-400 px-1 py-1 bg-orange-50">
+                          <input
+                            type="number"
+                            value={item.interestPctYear}
+                            onChange={(e) => updateBondItem("interestPctYear", safeFloat(e.target.value))}
+                            className="w-16 border border-orange-300 bg-orange-50 p-1 rounded text-center focus:border-orange-500 focus:outline-none"
+                            step="0.1"
+                          />
+                        </td>
+                        <td className="border border-gray-400 px-1 py-1 bg-orange-50">
+                          <input
+                            type="number"
+                            value={item.months}
+                            onChange={(e) => updateBondItem("months", safeFloat(e.target.value))}
+                            className="w-14 border border-orange-300 bg-orange-50 p-1 rounded text-center focus:border-orange-500 focus:outline-none"
+                          />
+                        </td>
+                        {/* Interest Amount */}
+                        <td className="border border-gray-400 px-2 py-1 text-right font-mono bg-orange-50">
+                          {interestAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        {/* Total = Premium Amount + Interest Amount */}
+                        <td className="border border-gray-400 px-2 py-1 text-right font-mono font-semibold">
+                          {rowTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        {/* Delete */}
+                        <td className="border border-gray-400 px-1 py-1 text-center">
+                          <button
+                            onClick={() => {
+                              const items = (currentBidding.financials.bondItems || []).filter((_: any, i: number) => i !== idx);
+                              setFinancials({ ...currentBidding.financials, bondItems: items });
+                            }}
+                            className="text-red-400 hover:text-red-600"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {/* Grand Total Row */}
+                  <tr className="bg-emerald-50 font-bold">
+                    <td colSpan={10} className="border border-gray-400 px-2 py-2 text-right">Grand total</td>
+                    <td className="border border-gray-400 px-2 py-2 text-right font-mono text-emerald-700">
+                      {financialIndirect.totalBankCharge.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Tax */}
+            <div className="mt-6 flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    setFinancials({
+                      ...currentBidding.financials,
+                      taxEnabled: !currentBidding.financials.taxEnabled,
+                    })
+                  }
+                  className={`p-1 rounded-full ${currentBidding.financials.taxEnabled !== false
+                    ? "text-emerald-600"
+                    : "text-slate-400"
+                    }`}
+                >
+                  {currentBidding.financials.taxEnabled !== false ? (
+                    <ToggleRight size={18} />
+                  ) : (
+                    <ToggleLeft size={18} />
+                  )}
+                </button>
+                <span>Tax (อากรแสตมป์ 0.1%):</span>
               </div>
-              {/* Removed Overhead & Profit input from here as requested */}
+              <span className="font-medium">
+                {formatTHB(financialIndirect.taxCost)}
+              </span>
             </div>
           </div>
         </Card>

@@ -3,6 +3,11 @@ node_modules/
 
 # production
 build/
+dist/
+
+# Vite
+dist-ssr/
+*.local
 
 # environment variables
 .env
