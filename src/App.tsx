@@ -775,12 +775,28 @@ export default function CostEstimator() {
     setIsSaving(true);
     
     try {
+      console.log("Uploading files to Firebase Storage...", selected.map(f => f.name));
+      
       // Upload files to Firebase Storage
       const uploadPromises = selected.map(async (file: File) => {
-        const filePath = `attachments/${currentBidding.id}/${type}/${id}/${Date.now()}_${file.name}`;
+        const timestamp = Date.now();
+        const filePath = `attachments/${currentBidding.id}/${type}/${id}/${timestamp}_${file.name}`;
+        console.log("Uploading to path:", filePath);
+        
         const storageRef = ref(storage, filePath);
-        await uploadBytes(storageRef, file);
+        
+        // Upload with timeout
+        const uploadTask = uploadBytes(storageRef, file);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Upload timeout - 30s")), 30000)
+        );
+        
+        await Promise.race([uploadTask, timeoutPromise]);
+        console.log("Upload successful, getting download URL...");
+        
         const downloadURL = await getDownloadURL(storageRef);
+        console.log("Got download URL:", downloadURL.substring(0, 50) + "...");
+        
         return {
           name: file.name,
           url: downloadURL,
@@ -789,6 +805,7 @@ export default function CostEstimator() {
       });
       
       const newFiles = await Promise.all(uploadPromises);
+      console.log("All uploads complete:", newFiles.length, "files");
       
       setter((prev: any) =>
         prev.map((item: any) =>
@@ -797,9 +814,11 @@ export default function CostEstimator() {
             : item
         )
       );
-    } catch (error) {
+      
+      alert(`อัปโหลด ${newFiles.length} ไฟล์สำเร็จ`);
+    } catch (error: any) {
       console.error("Upload Error:", error);
-      alert("เกิดข้อผิดพลาดในการอัปโหลดไฟล์");
+      alert("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + (error.message || "Unknown error"));
     } finally {
       setIsSaving(false);
       e.target.value = "";
