@@ -48,6 +48,7 @@ import {
   FilePlus,
   Calendar,
   Database,
+  Paperclip,
 } from "lucide-react";
 
 // --- Firebase SDK Imports ---
@@ -329,6 +330,8 @@ export default function CostEstimator() {
 
   const fileInputRef = useRef<any>(null);
   const saveTimeoutRef = useRef<any>(null);
+  const attachFileRef = useRef<any>(null);
+  const attachTargetRef = useRef<any>({ type: null, id: null });
 
   // --- Auth & Data Loading ---
   useEffect(() => {
@@ -448,6 +451,8 @@ export default function CostEstimator() {
       machineryEnabled: true,
       machinery: [...INITIAL_MACHINERY_DATA],
       financials: { ...DEFAULT_FINANCIALS },
+      directAttachments: [],
+      indirectAttachments: [],
     };
 
     setDraftProject(newDraft);
@@ -584,6 +589,8 @@ export default function CostEstimator() {
   const setMachineryEnabled = (val: any) =>
     updateCurrentBidding("machineryEnabled", val);
   const setFinancials = (val: any) => updateCurrentBidding("financials", val);
+  const setDirectAttachments = (val: any) => updateCurrentBidding("directAttachments", val);
+  const setIndirectAttachments = (val: any) => updateCurrentBidding("indirectAttachments", val);
 
   // --- Calculations ---
   const directCostSummary = useMemo(() => {
@@ -750,6 +757,15 @@ export default function CostEstimator() {
     setter((prev: any) =>
       prev.map((item: any) => (item.id === id ? { ...item, [field]: value } : item))
     );
+  };
+
+  const handleAttachmentFileChange = (e: any) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const { type, id } = attachTargetRef.current;
+    const setter = type === "direct" ? setDirectAttachments : setIndirectAttachments;
+    handleInputChange(setter, id, "fileName", file.name);
+    e.target.value = "";
   };
 
   const handleEstimateRate = (id: any) => {
@@ -2455,12 +2471,139 @@ export default function CostEstimator() {
     </div>
   );
 
+  const renderAttachmentFile = () => {
+    const renderAttachSection = (
+      title: string,
+      items: any[],
+      setter: any,
+      type: "direct" | "indirect"
+    ) => (
+      <div className="mb-6">
+        <div className="flex justify-between items-center px-3 py-2 bg-[#f5f500] border border-yellow-500">
+          <span className="font-bold text-sm text-slate-900">{title}</span>
+          <button
+            onClick={() =>
+              handleAddRow(setter, { refItem: "", description: "", fileName: "" })
+            }
+            className="text-sm font-semibold text-slate-800 hover:text-blue-700 transition-colors"
+          >
+            + Add Item
+          </button>
+        </div>
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-[#fef08a]">
+              <th className="p-2 border border-yellow-400 text-left font-bold text-slate-800 w-32">Ref.Item</th>
+              <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800">Description</th>
+              <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800 w-56">Upload file</th>
+              <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800 w-14"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(items || []).length === 0 && (
+              <tr>
+                <td
+                  colSpan={4}
+                  className="p-4 text-center text-slate-400 bg-[#fefce8] border border-yellow-200 italic text-sm"
+                >
+                  ไม่มีรายการ — กด + Add Item เพื่อเพิ่ม
+                </td>
+              </tr>
+            )}
+            {(items || []).map((item: any) => (
+              <tr key={item.id} className="bg-[#fefce8] hover:bg-yellow-100 group">
+                <td className="p-2 border border-yellow-300">
+                  <input
+                    type="text"
+                    value={item.refItem}
+                    onChange={(e) =>
+                      handleInputChange(setter, item.id, "refItem", e.target.value)
+                    }
+                    className="w-full bg-transparent border-b border-transparent focus:border-yellow-500 outline-none text-slate-800"
+                    placeholder="Ref..."
+                  />
+                </td>
+                <td className="p-2 border border-yellow-300">
+                  <input
+                    type="text"
+                    value={item.description}
+                    onChange={(e) =>
+                      handleInputChange(setter, item.id, "description", e.target.value)
+                    }
+                    className="w-full bg-transparent border-b border-transparent focus:border-yellow-500 outline-none text-slate-800"
+                    placeholder="รายละเอียด..."
+                  />
+                </td>
+                <td className="p-2 border border-yellow-300">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        attachTargetRef.current = { type, id: item.id };
+                        attachFileRef.current?.click();
+                      }}
+                      className="flex items-center gap-1 px-3 py-1 rounded bg-yellow-400 hover:bg-yellow-500 text-slate-900 text-xs font-semibold transition-colors shrink-0"
+                    >
+                      <Paperclip size={12} /> เลือกไฟล์
+                    </button>
+                    {item.fileName && (
+                      <span
+                        className="text-xs text-slate-600 truncate max-w-[130px]"
+                        title={item.fileName}
+                      >
+                        {item.fileName}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="p-2 border border-yellow-300 text-center">
+                  <button
+                    onClick={() => handleRemoveRow(setter, item.id)}
+                    className="text-red-400 hover:text-red-600 transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+
+    return (
+      <div className="space-y-6 animate-fadeIn">
+        <h2 className="text-2xl font-bold text-slate-800">Attachment File (เอกสารแนบ)</h2>
+        <input
+          type="file"
+          ref={attachFileRef}
+          onChange={handleAttachmentFileChange}
+          className="hidden"
+        />
+        <div className="bg-white rounded-xl shadow p-6 space-y-2">
+          {renderAttachSection(
+            "1. Direct Cost Attachment",
+            currentBidding.directAttachments || [],
+            setDirectAttachments,
+            "direct"
+          )}
+          {renderAttachSection(
+            "2. Indirect Cost Attachment",
+            currentBidding.indirectAttachments || [],
+            setIndirectAttachments,
+            "indirect"
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // Sidebar Menu Map
   const MENU_LABELS = {
     project: "1. ข้อมูลโครงการ",
     direct: "2. Direct Cost",
     indirect: "3. Indirect Cost",
     report: "4. Total Cost Report",
+    attachment: "5. Attachment file",
   };
 
   const renderSidebar = () => (
@@ -2509,6 +2652,7 @@ export default function CostEstimator() {
             {key === "direct" && <HardHat size={20} />}
             {key === "indirect" && <Briefcase size={20} />}
             {key === "report" && <FileText size={20} />}
+            {key === "attachment" && <Paperclip size={20} />}
             <span className="font-medium capitalize">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
           </button>
         ))}
@@ -2748,6 +2892,7 @@ export default function CostEstimator() {
         {activeMenu === "direct" && renderDirectCost()}
         {activeMenu === "indirect" && renderIndirectCost()}
         {activeMenu === "report" && renderReport()}
+        {activeMenu === "attachment" && renderAttachmentFile()}
       </main>
 
       {/* Fixed Bottom Left Version Label v.2.6 */}
