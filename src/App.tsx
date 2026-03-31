@@ -759,16 +759,32 @@ export default function CostEstimator() {
     );
   };
 
-  const handleAttachmentFileChange = (e: any) => {
+  const handleAttachmentFileChange = async (e: any) => {
     const selected = Array.from(e.target.files || []) as File[];
     if (selected.length === 0) return;
     const { type, id } = attachTargetRef.current;
     const setter = type === "direct" ? setDirectAttachments : setIndirectAttachments;
-    const newNames = selected.map((f: File) => f.name);
+    
+    // Read files as base64 data URLs
+    const filePromises = selected.map((file: File) => {
+      return new Promise<{name: string, data: string}>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          resolve({
+            name: file.name,
+            data: event.target?.result as string
+          });
+        };
+        reader.readAsDataURL(file);
+      });
+    });
+    
+    const newFiles = await Promise.all(filePromises);
+    
     setter((prev: any) =>
       prev.map((item: any) =>
         item.id === id
-          ? { ...item, files: [...(item.files || []), ...newNames] }
+          ? { ...item, files: [...(item.files || []), ...newFiles] }
           : item
       )
     );
@@ -2559,11 +2575,17 @@ export default function CostEstimator() {
                     </button>
                     {(item.files || []).length > 0 && (
                       <div className="flex flex-col gap-0.5 mt-1">
-                        {(item.files as string[]).map((fname: string, fi: number) => (
+                        {item.files.map((file: {name: string, data: string}, fi: number) => (
                           <div key={fi} className="flex items-center gap-1 bg-yellow-100 rounded px-1.5 py-0.5">
-                            <span className="text-[11px] text-slate-700 truncate max-w-[140px]" title={fname}>
-                              {fname}
-                            </span>
+                            <a
+                              href={file.data}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-blue-600 hover:text-blue-800 truncate max-w-[140px] underline cursor-pointer"
+                              title={`เปิด ${file.name} ในแท็บใหม่`}
+                            >
+                              {file.name}
+                            </a>
                             <button
                               onClick={() =>
                                 setter((prev: any) =>
@@ -2602,7 +2624,30 @@ export default function CostEstimator() {
 
     return (
       <div className="space-y-6 animate-fadeIn">
-        <h2 className="text-2xl font-bold text-slate-800">Attachment File (เอกสารแนบ)</h2>
+        <div className="flex justify-between items-center">
+          <h2 className="text-2xl font-bold text-slate-800">Attachment File (เอกสารแนบ)</h2>
+          <button
+            onClick={() => saveToFirestore(currentBidding)}
+            disabled={isSaving || selectedBiddingId === "DRAFT"}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+              selectedBiddingId === "DRAFT"
+                ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                : isSaving
+                  ? "bg-blue-300 text-white cursor-wait"
+                  : "bg-blue-600 hover:bg-blue-700 text-white shadow-md"
+            }`}
+          >
+            {isSaving ? (
+              <>
+                <Loader2 size={18} className="animate-spin" /> Saving...
+              </>
+            ) : (
+              <>
+                <Save size={18} /> Save
+              </>
+            )}
+          </button>
+        </div>
         <input
           type="file"
           ref={attachFileRef}
