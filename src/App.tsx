@@ -760,11 +760,18 @@ export default function CostEstimator() {
   };
 
   const handleAttachmentFileChange = (e: any) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const selected = Array.from(e.target.files || []) as File[];
+    if (selected.length === 0) return;
     const { type, id } = attachTargetRef.current;
     const setter = type === "direct" ? setDirectAttachments : setIndirectAttachments;
-    handleInputChange(setter, id, "fileName", file.name);
+    const newNames = selected.map((f: File) => f.name);
+    setter((prev: any) =>
+      prev.map((item: any) =>
+        item.id === id
+          ? { ...item, files: [...(item.files || []), ...newNames] }
+          : item
+      )
+    );
     e.target.value = "";
   };
 
@@ -2483,7 +2490,7 @@ export default function CostEstimator() {
           <span className="font-bold text-sm text-slate-900">{title}</span>
           <button
             onClick={() =>
-              handleAddRow(setter, { refItem: "", description: "", fileName: "" })
+              handleAddRow(setter, { refItem: "", description: "", files: [] })
             }
             className="text-sm font-semibold text-slate-800 hover:text-blue-700 transition-colors"
           >
@@ -2535,23 +2542,46 @@ export default function CostEstimator() {
                   />
                 </td>
                 <td className="p-2 border border-yellow-300">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col gap-1">
                     <button
                       onClick={() => {
                         attachTargetRef.current = { type, id: item.id };
                         attachFileRef.current?.click();
                       }}
-                      className="flex items-center gap-1 px-3 py-1 rounded bg-yellow-400 hover:bg-yellow-500 text-slate-900 text-xs font-semibold transition-colors shrink-0"
+                      className="flex items-center gap-1 px-3 py-1 rounded bg-yellow-400 hover:bg-yellow-500 text-slate-900 text-xs font-semibold transition-colors self-start"
                     >
                       <Paperclip size={12} /> เลือกไฟล์
+                      {(item.files || []).length > 0 && (
+                        <span className="ml-1 bg-slate-800 text-white rounded-full px-1.5 py-0.5 text-[10px] leading-none">
+                          {(item.files || []).length}
+                        </span>
+                      )}
                     </button>
-                    {item.fileName && (
-                      <span
-                        className="text-xs text-slate-600 truncate max-w-[130px]"
-                        title={item.fileName}
-                      >
-                        {item.fileName}
-                      </span>
+                    {(item.files || []).length > 0 && (
+                      <div className="flex flex-col gap-0.5 mt-1">
+                        {(item.files as string[]).map((fname: string, fi: number) => (
+                          <div key={fi} className="flex items-center gap-1 bg-yellow-100 rounded px-1.5 py-0.5">
+                            <span className="text-[11px] text-slate-700 truncate max-w-[140px]" title={fname}>
+                              {fname}
+                            </span>
+                            <button
+                              onClick={() =>
+                                setter((prev: any) =>
+                                  prev.map((it: any) =>
+                                    it.id === item.id
+                                      ? { ...it, files: it.files.filter((_: any, idx: number) => idx !== fi) }
+                                      : it
+                                  )
+                                )
+                              }
+                              className="text-red-400 hover:text-red-600 shrink-0 ml-auto"
+                              title="ลบไฟล์นี้"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </td>
@@ -2577,6 +2607,7 @@ export default function CostEstimator() {
           type="file"
           ref={attachFileRef}
           onChange={handleAttachmentFileChange}
+          multiple
           className="hidden"
         />
         <div className="bg-white rounded-xl shadow p-6 space-y-2">
