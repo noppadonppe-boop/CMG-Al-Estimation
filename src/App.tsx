@@ -69,7 +69,8 @@ import {
   limit,
   serverTimestamp,
 } from "firebase/firestore";
-import { auth, db } from "./firebaseConfig";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { auth, db, storage } from "./firebaseConfig";
 
 // Shared collection path: CMG Al-Estimation > root > biddings
 const FIRESTORE_COLLECTION = ["CMG Al-Estimation", "root", "biddings"] as const;
@@ -765,30 +766,44 @@ export default function CostEstimator() {
     const { type, id } = attachTargetRef.current;
     const setter = type === "direct" ? setDirectAttachments : setIndirectAttachments;
     
-    // Read files as base64 data URLs
-    const filePromises = selected.map((file: File) => {
-      return new Promise<{name: string, data: string}>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          resolve({
-            name: file.name,
-            data: event.target?.result as string
-          });
+    if (!currentBidding || selectedBiddingId === "DRAFT") {
+      alert("กรุณาบันทึกโครงการก่อนอัปโหลดไฟล์");
+      e.target.value = "";
+      return;
+    }
+    
+    setIsSaving(true);
+    
+    try {
+      // Upload files to Firebase Storage
+      const uploadPromises = selected.map(async (file: File) => {
+        const filePath = `attachments/${currentBidding.id}/${type}/${id}/${Date.now()}_${file.name}`;
+        const storageRef = ref(storage, filePath);
+        await uploadBytes(storageRef, file);
+        const downloadURL = await getDownloadURL(storageRef);
+        return {
+          name: file.name,
+          url: downloadURL,
+          path: filePath
         };
-        reader.readAsDataURL(file);
       });
-    });
-    
-    const newFiles = await Promise.all(filePromises);
-    
-    setter((prev: any) =>
-      prev.map((item: any) =>
-        item.id === id
-          ? { ...item, files: [...(item.files || []), ...newFiles] }
-          : item
-      )
-    );
-    e.target.value = "";
+      
+      const newFiles = await Promise.all(uploadPromises);
+      
+      setter((prev: any) =>
+        prev.map((item: any) =>
+          item.id === id
+            ? { ...item, files: [...(item.files || []), ...newFiles] }
+            : item
+        )
+      );
+    } catch (error) {
+      console.error("Upload Error:", error);
+      alert("เกิดข้อผิดพลาดในการอัปโหลดไฟล์");
+    } finally {
+      setIsSaving(false);
+      e.target.value = "";
+    }
   };
 
   const handleEstimateRate = (id: any) => {
@@ -2575,10 +2590,10 @@ export default function CostEstimator() {
                     </button>
                     {(item.files || []).length > 0 && (
                       <div className="flex flex-col gap-0.5 mt-1">
-                        {item.files.map((file: {name: string, data: string}, fi: number) => (
+                        {item.files.map((file: {name: string, url: string}, fi: number) => (
                           <div key={fi} className="flex items-center gap-1 bg-yellow-100 rounded px-1.5 py-0.5">
                             <a
-                              href={file.data}
+                              href={file.url}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-[11px] text-blue-600 hover:text-blue-800 truncate max-w-[140px] underline cursor-pointer"
