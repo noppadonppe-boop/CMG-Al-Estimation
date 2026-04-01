@@ -745,6 +745,45 @@ export default function CostEstimator() {
   const totalProjectCost =
     financialIndirect.subTotalBeforeOH + financialIndirect.ohProfitCost;
 
+  const buildDirectItemRows = (items: any[] = []) => {
+    const rows: any[] = [];
+    const mainNoById = new Map<any, number>();
+    const subCountByMainId = new Map<any, number>();
+    let mainCounter = 0;
+
+    items.forEach((item: any) => {
+      const isSub = item.type === "sub";
+      const parentId = item.parentId;
+      const parentMainNo = parentId ? mainNoById.get(parentId) : undefined;
+
+      if (isSub && parentMainNo) {
+        const currentSub = (subCountByMainId.get(parentId) || 0) + 1;
+        subCountByMainId.set(parentId, currentSub);
+        rows.push({
+          item,
+          displayNo: `${parentMainNo}.${currentSub}`,
+          isMain: false,
+        });
+        return;
+      }
+
+      mainCounter += 1;
+      mainNoById.set(item.id, mainCounter);
+      rows.push({
+        item: { ...item, type: "main", parentId: null },
+        displayNo: `${mainCounter}`,
+        isMain: true,
+      });
+    });
+
+    return rows;
+  };
+
+  const directItemRows = useMemo(
+    () => buildDirectItemRows(currentBidding?.directItems || []),
+    [currentBidding?.directItems]
+  );
+
   // --- Handlers ---
   const handleAddRow = (setter: any, template: any) => {
     const isInsurance = template.unit === "Lot";
@@ -762,6 +801,73 @@ export default function CostEstimator() {
     setter((prev: any) =>
       prev.map((item: any) => (item.id === id ? { ...item, [field]: value } : item))
     );
+  };
+
+  const handleAddDirectMainItem = () => {
+    setDirectItems((prev: any[]) => [
+      ...(prev || []),
+      {
+        id: Date.now(),
+        type: "main",
+        parentId: null,
+        desc: "Main Item ใหม่...",
+        spec: "-",
+        unit: "หน่วย",
+        qty: 1,
+        matRate: 0,
+        labRate: 0,
+        eqRate: 0,
+      },
+    ]);
+  };
+
+  const handleAddDirectSubItem = (mainId: any) => {
+    setDirectItems((prev: any[]) => {
+      const items = [...(prev || [])];
+      const mainIndex = items.findIndex((item: any) => item.id === mainId);
+      if (mainIndex === -1) return items;
+
+      let insertIndex = mainIndex + 1;
+      while (
+        insertIndex < items.length &&
+        items[insertIndex]?.type === "sub" &&
+        items[insertIndex]?.parentId === mainId
+      ) {
+        insertIndex += 1;
+      }
+
+      const newSub = {
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        type: "sub",
+        parentId: mainId,
+        desc: "Sub Item ใหม่...",
+        spec: "-",
+        unit: "หน่วย",
+        qty: 1,
+        matRate: 0,
+        labRate: 0,
+        eqRate: 0,
+      };
+
+      items.splice(insertIndex, 0, newSub);
+      return items;
+    });
+  };
+
+  const handleRemoveDirectItem = (id: any) => {
+    setDirectItems((prev: any[]) => {
+      const items = prev || [];
+      const target = items.find((item: any) => item.id === id);
+      if (!target) return items;
+
+      if ((target.type || "main") === "main") {
+        return items.filter(
+          (item: any) => item.id !== id && item.parentId !== id
+        );
+      }
+
+      return items.filter((item: any) => item.id !== id);
+    });
   };
 
   const handleBidDocFileUpload = async (e: any) => {
@@ -959,6 +1065,8 @@ export default function CostEstimator() {
         if (parts.length >= 1)
           newItems.push({
             id: Date.now() + i,
+            type: "main",
+            parentId: null,
             desc: parts[0] || "",
             spec: parts[1] || "",
             unit: parts[2] || "หน่วย",
@@ -1255,20 +1363,20 @@ export default function CostEstimator() {
         <td>Eq Rate</td>
         <td>Total Cost</td>
       </tr>
-      ${currentBidding.directItems
+      ${buildDirectItemRows(currentBidding.directItems || [])
         .map(
-          (item: any, idx: any) => `
+          (row: any) => `
         <tr>
-          <td>${idx + 1}</td>
-          <td>${item.desc}</td>
-          <td>${item.spec}</td>
-          <td>${item.unit}</td>
-          <td>${item.qty}</td>
-          <td>${item.matRate}</td>
-          <td>${item.labRate}</td>
-          <td>${item.eqRate}</td>
-          <td>${(item.qty || 0) *
-            ((item.matRate || 0) + (item.labRate || 0) + (item.eqRate || 0))
+          <td>${row.displayNo}</td>
+          <td>${row.item.desc}</td>
+          <td>${row.item.spec}</td>
+          <td>${row.item.unit}</td>
+          <td>${row.item.qty}</td>
+          <td>${row.item.matRate}</td>
+          <td>${row.item.labRate}</td>
+          <td>${row.item.eqRate}</td>
+          <td>${(row.item.qty || 0) *
+            ((row.item.matRate || 0) + (row.item.labRate || 0) + (row.item.eqRate || 0))
             }</td>
         </tr>
       `
@@ -1759,9 +1867,14 @@ export default function CostEstimator() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {(currentBidding.directItems || []).map((item: any, idx: any) => (
-                <tr key={item.id} className="hover:bg-slate-50 group">
-                  <td className="p-3 text-slate-400">{idx + 1}</td>
+              {directItemRows.map((row: any) => {
+                const item = row.item;
+                return (
+                <tr
+                  key={item.id}
+                  className={`hover:bg-slate-50 group ${row.isMain ? "bg-slate-50/60" : ""}`}
+                >
+                  <td className="p-3 text-slate-400 font-semibold">{row.displayNo}</td>
                   <td className="p-3">
                     <input
                       type="text"
@@ -1774,8 +1887,8 @@ export default function CostEstimator() {
                           e.target.value
                         )
                       }
-                      className="w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none"
-                      placeholder="ระบุงาน..."
+                      className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${row.isMain ? "font-semibold" : "pl-6"}`}
+                      placeholder={row.isMain ? "ระบุ Main item..." : "ระบุ Sub item..."}
                     />
                   </td>
                   <td className="p-3">
@@ -1908,6 +2021,15 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-3 flex items-center justify-center gap-2">
+                    {row.isMain && (
+                      <button
+                        onClick={() => handleAddDirectSubItem(item.id)}
+                        className="p-1.5 text-emerald-600 hover:text-white hover:bg-emerald-600 rounded-full transition-colors"
+                        title="Add Sub Item"
+                      >
+                        <Plus size={16} />
+                      </button>
+                    )}
                     <button
                       onClick={() => handleEstimateRate(item.id)}
                       className="p-1.5 text-indigo-500 hover:text-white hover:bg-indigo-500 rounded-full transition-colors"
@@ -1916,7 +2038,7 @@ export default function CostEstimator() {
                       <Wand2 size={16} />
                     </button>
                     <button
-                      onClick={() => handleRemoveRow(setDirectItems, item.id)}
+                      onClick={() => handleRemoveDirectItem(item.id)}
                       className="p-1.5 text-red-400 hover:text-white hover:bg-red-500 rounded-full transition-colors"
                       title="Delete Item"
                     >
@@ -1924,25 +2046,15 @@ export default function CostEstimator() {
                     </button>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
           <div className="p-4 border-t border-slate-100">
             <button
-              onClick={() =>
-                handleAddRow(setDirectItems, {
-                  desc: "งานเพิ่มใหม่...",
-                  spec: "-",
-                  unit: "หน่วย",
-                  qty: 1,
-                  matRate: 0,
-                  labRate: 0,
-                  eqRate: 0,
-                })
-              }
+              onClick={handleAddDirectMainItem}
               className="flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium"
             >
-              <Plus size={18} /> เพิ่มรายการ (Add Item)
+              <Plus size={18} /> เพิ่ม Main Item
             </button>
           </div>
         </Card>
