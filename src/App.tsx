@@ -333,6 +333,8 @@ export default function CostEstimator() {
   const saveTimeoutRef = useRef<any>(null);
   const attachFileRef = useRef<any>(null);
   const attachTargetRef = useRef<any>({ type: null, id: null });
+  const bidDocFileRef = useRef<any>(null);
+  const bidDocTargetIdRef = useRef<any>(null);
 
   // --- Auth & Data Loading ---
   useEffect(() => {
@@ -454,6 +456,7 @@ export default function CostEstimator() {
       financials: { ...DEFAULT_FINANCIALS },
       directAttachments: [],
       indirectAttachments: [],
+      biddingDocs: [],
     };
 
     setDraftProject(newDraft);
@@ -592,6 +595,7 @@ export default function CostEstimator() {
   const setFinancials = (val: any) => updateCurrentBidding("financials", val);
   const setDirectAttachments = (val: any) => updateCurrentBidding("directAttachments", val);
   const setIndirectAttachments = (val: any) => updateCurrentBidding("indirectAttachments", val);
+  const setBiddingDocs = (val: any) => updateCurrentBidding("biddingDocs", val);
 
   // --- Calculations ---
   const directCostSummary = useMemo(() => {
@@ -758,6 +762,43 @@ export default function CostEstimator() {
     setter((prev: any) =>
       prev.map((item: any) => (item.id === id ? { ...item, [field]: value } : item))
     );
+  };
+
+  const handleBidDocFileUpload = async (e: any) => {
+    const selected = Array.from(e.target.files || []) as File[];
+    if (selected.length === 0) return;
+    const docId = bidDocTargetIdRef.current;
+
+    if (!currentBidding || selectedBiddingId === "DRAFT") {
+      alert("กรุณาบันทึกโครงการก่อนอัปโหลดไฟล์");
+      e.target.value = "";
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const uploadPromises = selected.map(async (file: File) => {
+        const filePath = `biddingDocs/${currentBidding.id}/${docId}/${Date.now()}_${file.name}`;
+        const storageRef = ref(storage, filePath);
+        await uploadBytes(storageRef, file);
+        const downloadURL = await getDownloadURL(storageRef);
+        return { name: file.name, url: downloadURL, path: filePath };
+      });
+      const newFiles = await Promise.all(uploadPromises);
+      setBiddingDocs((prev: any) =>
+        prev.map((doc: any) =>
+          doc.id === docId
+            ? { ...doc, files: [...(doc.files || []), ...newFiles] }
+            : doc
+        )
+      );
+    } catch (error: any) {
+      console.error("Bid Doc Upload Error:", error);
+      alert("เกิดข้อผิดพลาดในการอัปโหลดไฟล์: " + (error.message || ""));
+    } finally {
+      setIsSaving(false);
+      e.target.value = "";
+    }
   };
 
   const handleAttachmentFileChange = async (e: any) => {
@@ -1472,6 +1513,161 @@ export default function CostEstimator() {
           </div>
         </div>
       </Card>
+
+      {/* Bidding Document List */}
+      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+        <div className="px-6 py-3 bg-red-50 border-b border-red-200">
+          <span className="text-red-600 font-bold text-sm">Note: Bidding Document list</span>
+        </div>
+        <div className="p-4">
+          <input
+            type="file"
+            ref={bidDocFileRef}
+            onChange={handleBidDocFileUpload}
+            multiple
+            className="hidden"
+          />
+          <div className="flex justify-between items-center mb-2">
+            <span className="font-semibold text-slate-700 text-sm">Bidding Document list</span>
+            <button
+              onClick={() => {
+                const newDoc = { id: Date.now(), description: "", docType: "TOR", files: [] };
+                setBiddingDocs((prev: any) => [...(prev || []), newDoc]);
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors"
+            >
+              + Add Item
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse border border-slate-300">
+              <thead>
+                <tr className="bg-green-100 text-slate-700 font-bold">
+                  <th className="border border-slate-300 p-2 text-center w-14">Item</th>
+                  <th className="border border-slate-300 p-2 text-left">Description</th>
+                  <th className="border border-slate-300 p-2 text-center w-44">Document Type</th>
+                  <th className="border border-slate-300 p-2 text-left">Upload file</th>
+                  <th className="border border-slate-300 p-2 text-center w-10"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {(currentBidding.biddingDocs || []).length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="border border-slate-300 p-4 text-center text-slate-400 text-xs">
+                      ยังไม่มีรายการ กด + Add Item เพื่อเพิ่ม
+                    </td>
+                  </tr>
+                ) : (
+                  (currentBidding.biddingDocs || []).map((doc: any, idx: number) => (
+                    <tr key={doc.id} className="hover:bg-slate-50 bg-orange-50">
+                      <td className="border border-slate-300 p-2 text-center text-slate-600 font-mono text-xs">{idx + 1}</td>
+                      <td className="border border-slate-300 p-2">
+                        <input
+                          type="text"
+                          value={doc.description || ""}
+                          onChange={(e) =>
+                            setBiddingDocs((prev: any) =>
+                              prev.map((d: any) => d.id === doc.id ? { ...d, description: e.target.value } : d)
+                            )
+                          }
+                          className="w-full p-1 border border-slate-200 rounded text-xs outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                          placeholder="ระบุคำอธิบายเอกสาร"
+                        />
+                      </td>
+                      <td className="border border-slate-300 p-2">
+                        <select
+                          value={doc.docType || "TOR"}
+                          onChange={(e) =>
+                            setBiddingDocs((prev: any) =>
+                              prev.map((d: any) => d.id === doc.id ? { ...d, docType: e.target.value } : d)
+                            )
+                          }
+                          className="w-full p-1 border border-slate-200 rounded text-xs outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                        >
+                          <option value="TOR">TOR</option>
+                          <option value="Drawing">Drawing</option>
+                          <option value="RFQ">RFQ</option>
+                          <option value="Specification">Specification</option>
+                          <option value="BOQ">BOQ</option>
+                          <option value="ราคากลาง">ราคากลาง</option>
+                          <option value="Project Over View">Project Over View</option>
+                          <option value="other doc.">other doc.</option>
+                        </select>
+                      </td>
+                      <td className="border border-slate-300 p-2">
+                        <div className="flex flex-col gap-1">
+                          <button
+                            onClick={() => {
+                              bidDocTargetIdRef.current = doc.id;
+                              bidDocFileRef.current?.click();
+                            }}
+                            disabled={selectedBiddingId === "DRAFT"}
+                            className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-semibold self-start transition-colors ${
+                              selectedBiddingId === "DRAFT"
+                                ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                                : "bg-blue-100 hover:bg-blue-200 text-blue-700"
+                            }`}
+                            title={selectedBiddingId === "DRAFT" ? "บันทึกโครงการก่อนอัปโหลด" : "อัปโหลดไฟล์"}
+                          >
+                            <Paperclip size={11} /> อัปโหลด
+                            {(doc.files || []).length > 0 && (
+                              <span className="ml-1 bg-blue-600 text-white rounded-full px-1.5 py-0.5 text-[10px] leading-none">
+                                {(doc.files || []).length}
+                              </span>
+                            )}
+                          </button>
+                          {(doc.files || []).length > 0 && (
+                            <div className="flex flex-col gap-0.5">
+                              {(doc.files || []).map((f: any, fi: number) => (
+                                <div key={fi} className="flex items-center gap-1 bg-blue-50 rounded px-1.5 py-0.5">
+                                  <a
+                                    href={f.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[11px] text-blue-600 hover:text-blue-800 underline truncate max-w-[200px]"
+                                    title={f.name}
+                                  >
+                                    {f.name}
+                                  </a>
+                                  <button
+                                    onClick={() =>
+                                      setBiddingDocs((prev: any) =>
+                                        prev.map((d: any) =>
+                                          d.id === doc.id
+                                            ? { ...d, files: d.files.filter((_: any, i: number) => i !== fi) }
+                                            : d
+                                        )
+                                      )
+                                    }
+                                    className="text-red-400 hover:text-red-600 shrink-0 ml-auto text-xs"
+                                    title="ลบไฟล์"
+                                  >×</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="border border-slate-300 p-2 text-center">
+                        <button
+                          onClick={() =>
+                            setBiddingDocs((prev: any) => prev.filter((d: any) => d.id !== doc.id))
+                          }
+                          className="text-red-400 hover:text-red-600 transition-colors"
+                          title="ลบแถวนี้"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div className="flex justify-end">
         <button
           onClick={() => setActiveMenu("direct")}
