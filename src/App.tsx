@@ -1035,8 +1035,13 @@ export default function CostEstimator() {
       csvHeader = "Item,Qty,Rate\n";
       exampleRow = "รายการ,1,5000\n";
     } else {
-      csvHeader = "Description,Spec,Unit,Qty\n";
-      exampleRow = "งานตัวอย่าง,สเปค,หน่วย,1\n";
+      csvHeader = "Type,Description,Spec,Unit,Qty\n";
+      exampleRow =
+        "main,งานโครงสร้าง (Main Item),สเปคหลัก,เหมา,1\n" +
+        "sub,งานขุดดิน (Sub Item),ความลึก 1.5ม.,ลบ.ม.,100\n" +
+        "sub,งานถมดิน (Sub Item),-,ลบ.ม.,80\n" +
+        "main,งานสถาปัตยกรรม (Main Item),-,เหมา,1\n" +
+        "sub,งานก่ออิฐฉาบปูน (Sub Item),-,ตร.ม.,200\n";
     }
     const blob = new Blob([bom + csvHeader + exampleRow], {
       type: "text/csv;charset=utf-8;",
@@ -1056,29 +1061,58 @@ export default function CostEstimator() {
       if (!text) return;
       const lines = text.split("\n");
       const newItems: any[] = [];
-      let startIndex =
-        lines[0] && lines[0].toLowerCase().includes("description") ? 1 : 0;
+
+      // Detect if new format (has "Type" column) or old format
+      const headerLine = lines[0]?.toLowerCase() || "";
+      const hasTypeCol = headerLine.startsWith("type");
+      const startIndex = headerLine.includes("description") || headerLine.startsWith("type") ? 1 : 0;
+
+      // Track last main item id for sub-item linking
+      let lastMainId: any = null;
+
       for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
         const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-        if (parts.length >= 1)
+
+        if (hasTypeCol) {
+          // New format: Type,Description,Spec,Unit,Qty
+          const itemType = (parts[0] || "main").trim().toLowerCase();
+          const isMain = itemType !== "sub";
+          const id = Date.now() + i + Math.floor(Math.random() * 9999);
+          if (isMain) lastMainId = id;
           newItems.push({
-            id: Date.now() + i,
-            type: "main",
-            parentId: null,
-            desc: parts[0] || "",
-            spec: parts[1] || "",
-            unit: parts[2] || "หน่วย",
-            qty: safeFloat(parts[3]),
+            id,
+            type: isMain ? "main" : "sub",
+            parentId: isMain ? null : lastMainId,
+            desc: parts[1] || "",
+            spec: parts[2] || "-",
+            unit: parts[3] || "หน่วย",
+            qty: safeFloat(parts[4]),
             matRate: 0,
             labRate: 0,
             eqRate: 0,
           });
+        } else {
+          // Old format: Description,Spec,Unit,Qty — all become main items
+          if (parts.length >= 1)
+            newItems.push({
+              id: Date.now() + i,
+              type: "main",
+              parentId: null,
+              desc: parts[0] || "",
+              spec: parts[1] || "",
+              unit: parts[2] || "หน่วย",
+              qty: safeFloat(parts[3]),
+              matRate: 0,
+              labRate: 0,
+              eqRate: 0,
+            });
+        }
       }
       if (
         newItems.length > 0 &&
-        window.confirm(`Found ${newItems.length} items. Append?`)
+        window.confirm(`Found ${newItems.length} items (${newItems.filter((x:any)=>x.type==="main").length} main, ${newItems.filter((x:any)=>x.type==="sub").length} sub). Append?`)
       )
         setDirectItems((prev: any[]) => [...(prev || []), ...newItems]);
     };
@@ -1336,21 +1370,67 @@ export default function CostEstimator() {
   };
 
   const handleExportDirectCostExcel = () => {
-    const bom = "\uFEFF";
+    const rows = buildDirectItemRows(currentBidding.directItems || []);
+
+    // Pre-compute sub-item totals per main item
+    const mainTotals = new Map<any, number>();
+    rows.forEach((row: any) => {
+      if (!row.isMain) {
+        const parentId = row.item.parentId;
+        const cost = (row.item.qty || 0) * ((row.item.matRate || 0) + (row.item.labRate || 0) + (row.item.eqRate || 0));
+        mainTotals.set(parentId, (mainTotals.get(parentId) || 0) + cost);
+      }
+    });
+
+    const rowsHtml = rows.map((row: any) => {
+      const item = row.item;
+      const cost = (item.qty || 0) * ((item.matRate || 0) + (item.labRate || 0) + (item.eqRate || 0));
+      const subTotal = row.isMain && mainTotals.has(item.id) ? (mainTotals.get(item.id) ?? 0) : null;
+      const displayCost = row.isMain && subTotal !== null ? subTotal : cost;
+
+      if (row.isMain) {
+        return `
+        <tr style="background-color:#f1f5f9; font-weight:bold;">
+          <td style="background-color:#e2e8f0;">${row.displayNo}</td>
+          <td>${item.desc}</td>
+          <td>${item.spec || '-'}</td>
+          <td style="text-align:center">${item.unit}</td>
+          <td style="text-align:right">${item.qty}</td>
+          <td style="text-align:right">${item.matRate || ''}</td>
+          <td style="text-align:right">${item.labRate || ''}</td>
+          <td style="text-align:right">${item.eqRate || ''}</td>
+          <td style="text-align:right; font-weight:bold">${displayCost.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+        </tr>`;
+      } else {
+        return `
+        <tr>
+          <td style="padding-left:20px; color:#64748b;">${row.displayNo}</td>
+          <td style="padding-left:20px;">${item.desc}</td>
+          <td>${item.spec || '-'}</td>
+          <td style="text-align:center">${item.unit}</td>
+          <td style="text-align:right">${item.qty}</td>
+          <td style="text-align:right; color:#1d4ed8">${item.matRate || ''}</td>
+          <td style="text-align:right; color:#c2410c">${item.labRate || ''}</td>
+          <td style="text-align:right; color:#7c3aed">${item.eqRate || ''}</td>
+          <td style="text-align:right">${cost.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+        </tr>`;
+      }
+    }).join("");
+
     let table = `
     <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
     <head>
     <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8">
     <style>
       .header { font-weight: bold; font-size: 14pt; }
-      .table-header { font-weight: bold; background-color: #f3f4f6; text-align: center; }
-      td { border: 1px solid #ddd; padding: 5px; }
+      .table-header { font-weight: bold; background-color: #334155; color: white; text-align: center; }
+      td { border: 1px solid #cbd5e1; padding: 5px; font-size: 11pt; }
     </style>
     </head>
     <body>
     <table>
-      <tr><td colspan="9" class="header">Direct Cost Breakdown: ${currentBidding.project.name
-      }</td></tr>
+      <tr><td colspan="9" class="header">Direct Cost Breakdown: ${currentBidding.project.name}</td></tr>
+      <tr><td colspan="9">Bidding No: ${currentBidding.project.biddingNo} &nbsp;&nbsp; Client: ${currentBidding.project.client}</td></tr>
       <tr><td></td></tr>
       <tr class="table-header">
         <td>#</td>
@@ -1361,36 +1441,17 @@ export default function CostEstimator() {
         <td>Mat Rate</td>
         <td>Lab Rate</td>
         <td>Eq Rate</td>
-        <td>Total Cost</td>
+        <td>Total Cost (฿)</td>
       </tr>
-      ${buildDirectItemRows(currentBidding.directItems || [])
-        .map(
-          (row: any) => `
-        <tr>
-          <td>${row.displayNo}</td>
-          <td>${row.item.desc}</td>
-          <td>${row.item.spec}</td>
-          <td>${row.item.unit}</td>
-          <td>${row.item.qty}</td>
-          <td>${row.item.matRate}</td>
-          <td>${row.item.labRate}</td>
-          <td>${row.item.eqRate}</td>
-          <td>${(row.item.qty || 0) *
-            ((row.item.matRate || 0) + (row.item.labRate || 0) + (row.item.eqRate || 0))
-            }</td>
-        </tr>
-      `
-        )
-        .join("")}
+      ${rowsHtml}
       <tr><td></td></tr>
-      <tr style="font-weight: bold;">
-        <td colspan="8" style="text-align: right;">Grand Total Direct Cost</td>
-        <td>${directCostSummary.grandTotal}</td>
+      <tr style="font-weight: bold; background-color:#dcfce7;">
+        <td colspan="8" style="text-align: right;">Grand Total Direct Cost (฿)</td>
+        <td style="text-align:right">${directCostSummary.grandTotal.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       </tr>
     </table>
     </body>
-    </html>
-    `;
+    </html>`;
 
     const blob = new Blob([table], { type: "application/vnd.ms-excel" });
     const link = document.createElement("a");
