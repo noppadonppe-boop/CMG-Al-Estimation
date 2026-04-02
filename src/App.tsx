@@ -807,7 +807,7 @@ export default function CostEstimator() {
     setDirectItems((prev: any[]) => [
       ...(prev || []),
       {
-        id: Date.now(),
+        id: `main_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         type: "main",
         parentId: null,
         desc: "Main Item ใหม่...",
@@ -827,17 +827,20 @@ export default function CostEstimator() {
       const mainIndex = items.findIndex((item: any) => item.id === mainId);
       if (mainIndex === -1) return items;
 
+      // Find the insertion point: after the last existing sub of this mainId
+      // Stop as soon as we hit a non-sub item OR a sub belonging to a different parent
       let insertIndex = mainIndex + 1;
-      while (
-        insertIndex < items.length &&
-        items[insertIndex]?.type === "sub" &&
-        items[insertIndex]?.parentId === mainId
-      ) {
-        insertIndex += 1;
+      while (insertIndex < items.length) {
+        const cur = items[insertIndex];
+        if (cur.type === "sub" && cur.parentId === mainId) {
+          insertIndex += 1;
+        } else {
+          break;
+        }
       }
 
       const newSub = {
-        id: Date.now() + Math.floor(Math.random() * 1000),
+        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         type: "sub",
         parentId: mainId,
         desc: "Sub Item ใหม่...",
