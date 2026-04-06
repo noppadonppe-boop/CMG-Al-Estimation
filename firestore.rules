@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Match the app document (collection name has a space — matched via wildcard)
+    match /{appName}/root {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // Users collection
+    match /{appName}/root/users/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // App meta config
+    match /{appName}/root/appMeta/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Activity logs
+    match /{appName}/root/activityLogs/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // All other sub-collections under root (biddings, etc.) — catch-all
+    match /{appName}/root/{sub}/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    match /{appName}/root/{sub}/{docId}/{rest=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+  }
+}
