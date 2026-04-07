@@ -487,7 +487,6 @@ export default function CostEstimator() {
     if (hasRole("MasterAdmin", "BDT", "Viewer", "Creator")) return true;
     return (bid?.assignedTo || []).includes(user?.uid);
   };
-
   // --- Auth: listen + load profile realtime ---
   useEffect(() => {
     console.log("[Auth] Initializing onAuthStateChanged...");
@@ -912,6 +911,10 @@ export default function CostEstimator() {
     if (selectedBiddingId === "DRAFT") return draftProject;
     return biddings.find((b) => b.id === selectedBiddingId);
   }, [biddings, selectedBiddingId, draftProject]);
+
+  // AssignTo => can edit inside their assigned projects but cannot delete the project itself
+  // View/Viewer/Staff => read-only inside the editor
+  const isProjectEditable = currentBidding ? canEditProject(currentBidding) : false;
 
   const updateCurrentBidding = (section: any, newValueOrFn: any) => {
     if (!currentBidding) return;
@@ -2246,6 +2249,12 @@ export default function CostEstimator() {
 
   const renderProjectInfo = () => (
     <div className="space-y-6 animate-fadeIn">
+      {!isProjectEditable && (
+        <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm font-medium">
+          <Shield size={16} className="text-amber-500 shrink-0"/>
+          <span>คุณมีสิทธิ์ <strong>ดูอย่างเดียว</strong> — ไม่สามารถแก้ไขหรือลบข้อมูลในโครงการนี้ได้</span>
+        </div>
+      )}
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-slate-800">
           ข้อมูลโครงการ (Project Information)
@@ -2749,7 +2758,7 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-3 flex items-center justify-center gap-2">
-                    {row.isMain && (
+                    {isProjectEditable && row.isMain && (
                       <button
                         onClick={() => handleAddDirectSubItem(item.id)}
                         className="p-1.5 text-emerald-600 hover:text-white hover:bg-emerald-600 rounded-full transition-colors"
@@ -2758,6 +2767,7 @@ export default function CostEstimator() {
                         <Plus size={16} />
                       </button>
                     )}
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleEstimateRate(item.id)}
                       className="p-1.5 text-indigo-500 hover:text-white hover:bg-indigo-500 rounded-full transition-colors"
@@ -2765,6 +2775,8 @@ export default function CostEstimator() {
                     >
                       <Wand2 size={16} />
                     </button>
+                    )}
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleRemoveDirectItem(item.id)}
                       className="p-1.5 text-red-400 hover:text-white hover:bg-red-500 rounded-full transition-colors"
@@ -2772,11 +2784,13 @@ export default function CostEstimator() {
                     >
                       <Trash2 size={16} />
                     </button>
+                    )}
                   </td>
                 </tr>
               )})}
             </tbody>
           </table>
+          {isProjectEditable && (
           <div className="p-4 border-t border-slate-100">
             <button
               onClick={handleAddDirectMainItem}
@@ -2785,6 +2799,7 @@ export default function CostEstimator() {
               <Plus size={18} /> เพิ่ม Main Item
             </button>
           </div>
+          )}
         </Card>
         <div className="grid grid-cols-3 gap-4">
           <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
@@ -2832,6 +2847,7 @@ export default function CostEstimator() {
         className="mb-6"
         action={
           <div className="flex items-center gap-2">
+            {isProjectEditable && (
             <button
               onClick={() => setEnabled(!enabled)}
               className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium transition-colors mr-2 ${enabled
@@ -2842,6 +2858,7 @@ export default function CostEstimator() {
               {enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}{" "}
               {enabled ? "ใช้งาน (Active)" : "ไม่ใช้งาน (Inactive)"}
             </button>
+            )}
             <div
               className={`flex items-center gap-2 ${enabled ? "" : "opacity-50 pointer-events-none"
                 }`}
@@ -2852,6 +2869,7 @@ export default function CostEstimator() {
               >
                 <Download size={14} /> Template
               </button>
+              {!isProjectEditable && <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">ดูอย่างเดียว</span>}
               <input
                 type="file"
                 id={inputId}
@@ -3021,17 +3039,20 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-2">
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleRemoveRow(setter, item.id)}
-                      className="text-red-400"
+                      className="text-red-400 hover:text-red-600"
                     >
                       <Trash2 size={16} />
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {isProjectEditable && (
           <div className="mt-3">
             <button
               onClick={() => handleAddRow(setter, template)}
@@ -3040,6 +3061,7 @@ export default function CostEstimator() {
               <Plus size={14} /> เพิ่มรายการ
             </button>
           </div>
+          )}
         </div>
       </Card>
     );
