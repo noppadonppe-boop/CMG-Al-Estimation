@@ -32,6 +32,8 @@ import {
   Search,
   RotateCcw,
   ArrowLeft,
+  ChevronDown,
+  ChevronRight,
   Copy,
   MoreVertical,
   FolderOpen,
@@ -295,8 +297,88 @@ const formatTHB = (num: any) => {
 
 const safeFloat = (value: any) => {
   if (value === "" || value === null || value === undefined) return 0;
-  const num = parseFloat(value);
+  const normalized = String(value).replace(/,/g, "").replace(/"/g, "").trim();
+  if (normalized === "") return 0;
+  const num = parseFloat(normalized);
   return isNaN(num) ? 0 : num;
+};
+
+const roundToTwoDecimals = (value: any) =>
+  Math.round((safeFloat(value) + Number.EPSILON) * 100) / 100;
+
+const sanitizeDecimalInput = (input: string) => {
+  const cleaned = input.replace(/[^\d.,]/g, "");
+  const firstDotIndex = cleaned.indexOf(".");
+  if (firstDotIndex === -1) return cleaned;
+
+  const integerPart = cleaned.slice(0, firstDotIndex).replace(/\./g, "");
+  const decimalPart = cleaned
+    .slice(firstDotIndex + 1)
+    .replace(/\./g, "")
+    .slice(0, 2);
+
+  return `${integerPart}.${decimalPart}`;
+};
+
+const formatDecimalInput = (input: string) => {
+  const sanitized = sanitizeDecimalInput(input).replace(/,/g, "");
+  if (sanitized === "") return "";
+
+  const hasDot = sanitized.includes(".");
+  const startsWithDot = sanitized.startsWith(".");
+  const [integerPart = "", decimalPart = ""] = sanitized.split(".");
+  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+  if (startsWithDot) return hasDot ? `.${decimalPart}` : "";
+  if (!hasDot) return formattedInteger;
+  return `${formattedInteger}.${decimalPart}`;
+};
+
+const getCaretPositionFromNormalizedCount = (
+  formattedValue: string,
+  normalizedCount: number
+) => {
+  if (normalizedCount <= 0) return 0;
+
+  let seen = 0;
+  for (let i = 0; i < formattedValue.length; i++) {
+    if (formattedValue[i] !== ",") seen += 1;
+    if (seen >= normalizedCount) return i + 1;
+  }
+
+  return formattedValue.length;
+};
+
+const parseFormattedDecimalInput = (input: string, cursorPosition: number) => {
+  const formattedValue = formatDecimalInput(input);
+  const normalizedBeforeCursor = sanitizeDecimalInput(
+    input.slice(0, cursorPosition)
+  ).replace(/,/g, "");
+  const caretPosition = getCaretPositionFromNormalizedCount(
+    formattedValue,
+    normalizedBeforeCursor.length
+  );
+
+  return {
+    formattedValue,
+    numericValue: roundToTwoDecimals(formattedValue),
+    caretPosition,
+  };
+};
+
+const mergeDirectItemTransientFields = (incomingItems: any[] = [], existingItems: any[] = []) => {
+  const existingById = new Map(existingItems.map((item: any) => [item.id, item]));
+  return incomingItems.map((item: any) => {
+    const existing = existingById.get(item.id);
+    if (!existing) return item;
+
+    const transientFields = ["_qtyInput", "_matRateInput", "_labRateInput", "_eqRateInput"];
+    const merged = { ...item } as any;
+    transientFields.forEach((field) => {
+      if (existing[field] !== undefined) merged[field] = existing[field];
+    });
+    return merged;
+  });
 };
 
 // UI Components
@@ -326,6 +408,7 @@ export default function CostEstimator() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [activeMenu, setActiveMenu] = useState("project");
+  const [collapsedMainIds, setCollapsedMainIds] = useState<any[]>([]);
 
   const [draftProject, setDraftProject] = useState<any>(null);
 
@@ -384,7 +467,19 @@ export default function CostEstimator() {
             id: doc.id,
             ...doc.data(),
           }));
-          setBiddings(loadedBiddings);
+          setBiddings((prev: any[]) =>
+            loadedBiddings.map((loaded: any) => {
+              const existing = prev.find((b: any) => b.id === loaded.id);
+              if (!existing?.directItems || !loaded?.directItems) return loaded;
+              return {
+                ...loaded,
+                directItems: mergeDirectItemTransientFields(
+                  loaded.directItems,
+                  existing.directItems
+                ),
+              };
+            })
+          );
           setIsDataLoaded(true);
         },
         (error: any) => {
@@ -552,23 +647,37 @@ export default function CostEstimator() {
 
   const updateCurrentBidding = (section: any, newValueOrFn: any) => {
     if (!currentBidding) return;
-    const currentValue = currentBidding[section];
-    const newValue =
-      typeof newValueOrFn === "function"
-        ? newValueOrFn(currentValue)
-        : newValueOrFn;
 
     if (selectedBiddingId === "DRAFT") {
-      setDraftProject((prev: any) => ({ ...prev, [section]: newValue }));
+      setDraftProject((prev: any) => {
+        const currentSectionValue = prev?.[section];
+        const newValue =
+          typeof newValueOrFn === "function"
+            ? newValueOrFn(currentSectionValue)
+            : newValueOrFn;
+        return { ...prev, [section]: newValue };
+      });
     } else {
-      const updatedBidding = { ...currentBidding, [section]: newValue };
-      setBiddings((prev: any) =>
-        prev.map((b: any) => (b.id === selectedBiddingId ? updatedBidding : b))
-      );
-      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-      saveTimeoutRef.current = setTimeout(() => {
-        saveToFirestore(updatedBidding);
-      }, 1000);
+      setBiddings((prev: any[]) => {
+        let updatedBiddingForSave = currentBidding;
+        const nextBiddings = prev.map((b: any) => {
+          if (b.id !== selectedBiddingId) return b;
+          const currentSectionValue = b?.[section];
+          const newValue =
+            typeof newValueOrFn === "function"
+              ? newValueOrFn(currentSectionValue)
+              : newValueOrFn;
+          updatedBiddingForSave = { ...b, [section]: newValue };
+          return updatedBiddingForSave;
+        });
+
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+          saveToFirestore(updatedBiddingForSave);
+        }, 1000);
+
+        return nextBiddings;
+      });
     }
   };
 
@@ -747,34 +856,45 @@ export default function CostEstimator() {
 
   const buildDirectItemRows = (items: any[] = []) => {
     const rows: any[] = [];
-    const mainNoById = new Map<any, number>();
-    const subCountByMainId = new Map<any, number>();
-    let mainCounter = 0;
+    const itemById = new Map(items.map((item: any) => [item.id, item]));
+    const childrenByParentId = new Map<any, any[]>();
 
     items.forEach((item: any) => {
-      const isSub = item.type === "sub";
-      const parentId = item.parentId;
-      const parentMainNo = parentId ? mainNoById.get(parentId) : undefined;
-
-      if (isSub && parentMainNo) {
-        const currentSub = (subCountByMainId.get(parentId) || 0) + 1;
-        subCountByMainId.set(parentId, currentSub);
-        rows.push({
-          item,
-          displayNo: `${parentMainNo}.${currentSub}`,
-          isMain: false,
-        });
-        return;
-      }
-
-      mainCounter += 1;
-      mainNoById.set(item.id, mainCounter);
-      rows.push({
-        item: { ...item, type: "main", parentId: null },
-        displayNo: `${mainCounter}`,
-        isMain: true,
-      });
+      const parentId =
+        item.parentId && itemById.has(item.parentId) ? item.parentId : null;
+      const siblings = childrenByParentId.get(parentId) || [];
+      siblings.push(item);
+      childrenByParentId.set(parentId, siblings);
     });
+
+    const walk = (
+      parentId: any,
+      prefix: string[] = [],
+      level = 0,
+      rootMainId: any = null
+    ) => {
+      const children = childrenByParentId.get(parentId) || [];
+      children.forEach((item: any, index: number) => {
+        const displayParts = [...prefix, String(index + 1)];
+        const normalizedType =
+          level === 0 ? "main" : level === 1 ? "sub" : "secondsub";
+        const currentRootMainId = level === 0 ? item.id : rootMainId;
+
+        rows.push({
+          item: { ...item, type: normalizedType },
+          displayNo: displayParts.join("."),
+          isMain: level === 0,
+          level,
+          canAddChild: level < 2,
+          hasChildren: (childrenByParentId.get(item.id) || []).length > 0,
+          rootMainId: currentRootMainId,
+        });
+
+        walk(item.id, displayParts, level + 1, currentRootMainId);
+      });
+    };
+
+    walk(null);
 
     return rows;
   };
@@ -782,6 +902,15 @@ export default function CostEstimator() {
   const directItemRows = useMemo(
     () => buildDirectItemRows(currentBidding?.directItems || []),
     [currentBidding?.directItems]
+  );
+
+  const visibleDirectItemRows = useMemo(
+    () =>
+      directItemRows.filter(
+        (row: any) =>
+          row.level === 0 || !collapsedMainIds.includes(row.rootMainId)
+      ),
+    [directItemRows, collapsedMainIds]
   );
 
   // --- Handlers ---
@@ -803,6 +932,37 @@ export default function CostEstimator() {
     );
   };
 
+  const handleDirectNumericInputChange = (
+    e: any,
+    id: any,
+    inputField: string,
+    valueField: string
+  ) => {
+    const input = e.target;
+    const { formattedValue, numericValue, caretPosition } =
+      parseFormattedDecimalInput(
+        input.value,
+        input.selectionStart ?? input.value.length
+      );
+
+    handleInputChange(setDirectItems, id, inputField, formattedValue);
+    handleInputChange(setDirectItems, id, valueField, numericValue);
+
+    requestAnimationFrame(() => {
+      if (document.activeElement === input) {
+        input.setSelectionRange(caretPosition, caretPosition);
+      }
+    });
+  };
+
+  const toggleMainRowCollapse = (mainId: any) => {
+    setCollapsedMainIds((prev: any[]) =>
+      prev.includes(mainId)
+        ? prev.filter((id: any) => id !== mainId)
+        : [...prev, mainId]
+    );
+  };
+
   const handleAddDirectMainItem = () => {
     setDirectItems((prev: any[]) => [
       ...(prev || []),
@@ -821,28 +981,50 @@ export default function CostEstimator() {
     ]);
   };
 
-  const handleAddDirectSubItem = (mainId: any) => {
+  const getDirectItemDepth = (items: any[], itemId: any) => {
+    let depth = 0;
+    let current = items.find((item: any) => item.id === itemId);
+
+    while (current?.parentId) {
+      depth += 1;
+      current = items.find((item: any) => item.id === current.parentId);
+      if (!current) break;
+    }
+
+    return depth;
+  };
+
+  const getLastDescendantIndex = (items: any[], itemId: any) => {
+    const descendantIds = new Set<any>([itemId]);
+    let lastIndex = items.findIndex((item: any) => item.id === itemId);
+
+    for (let i = lastIndex + 1; i < items.length; i++) {
+      if (descendantIds.has(items[i].parentId)) {
+        descendantIds.add(items[i].id);
+        lastIndex = i;
+        continue;
+      }
+      break;
+    }
+
+    return lastIndex;
+  };
+
+  const handleAddDirectSubItem = (parentId: any) => {
     setDirectItems((prev: any[]) => {
       const items = [...(prev || [])];
-      const mainIndex = items.findIndex((item: any) => item.id === mainId);
-      if (mainIndex === -1) return items;
+      const parentItem = items.find((item: any) => item.id === parentId);
+      if (!parentItem) return items;
 
-      // Find the insertion point: after the last existing sub of this mainId
-      // Stop as soon as we hit a non-sub item OR a sub belonging to a different parent
-      let insertIndex = mainIndex + 1;
-      while (insertIndex < items.length) {
-        const cur = items[insertIndex];
-        if (cur.type === "sub" && cur.parentId === mainId) {
-          insertIndex += 1;
-        } else {
-          break;
-        }
-      }
+      const parentDepth = getDirectItemDepth(items, parentId);
+      if (parentDepth >= 2) return items;
+      const insertIndex = getLastDescendantIndex(items, parentId) + 1;
+      const newDepth = parentDepth + 1;
 
       const newSub = {
         id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        type: "sub",
-        parentId: mainId,
+        type: newDepth === 1 ? "sub" : "secondsub",
+        parentId,
         desc: "Sub Item ใหม่...",
         spec: "-",
         unit: "หน่วย",
@@ -860,16 +1042,24 @@ export default function CostEstimator() {
   const handleRemoveDirectItem = (id: any) => {
     setDirectItems((prev: any[]) => {
       const items = prev || [];
-      const target = items.find((item: any) => item.id === id);
-      if (!target) return items;
+      const idsToRemove = new Set<any>([id]);
+      let foundNewChild = true;
 
-      if ((target.type || "main") === "main") {
-        return items.filter(
-          (item: any) => item.id !== id && item.parentId !== id
-        );
+      while (foundNewChild) {
+        foundNewChild = false;
+        items.forEach((item: any) => {
+          if (
+            item.parentId &&
+            idsToRemove.has(item.parentId) &&
+            !idsToRemove.has(item.id)
+          ) {
+            idsToRemove.add(item.id);
+            foundNewChild = true;
+          }
+        });
       }
 
-      return items.filter((item: any) => item.id !== id);
+      return items.filter((item: any) => !idsToRemove.has(item.id));
     });
   };
 
@@ -1931,14 +2121,34 @@ export default function CostEstimator() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {directItemRows.map((row: any) => {
+              {visibleDirectItemRows.map((row: any) => {
                 const item = row.item;
                 return (
                 <tr
                   key={item.id}
-                  className={`hover:bg-slate-50 group ${row.isMain ? "bg-slate-50/60" : ""}`}
+                  className={`hover:bg-slate-50 group ${row.level === 0 ? "bg-slate-50/60" : row.level === 1 ? "bg-blue-50/20" : "bg-amber-50/20"}`}
                 >
-                  <td className="p-3 text-slate-400 font-semibold">{row.displayNo}</td>
+                  <td className="p-3 text-slate-400 font-semibold">
+                    <div className="flex items-center gap-1">
+                      {row.level === 0 && row.hasChildren ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleMainRowCollapse(item.id)}
+                          className="rounded p-0.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors"
+                          title={collapsedMainIds.includes(item.id) ? "Expand" : "Collapse"}
+                        >
+                          {collapsedMainIds.includes(item.id) ? (
+                            <ChevronRight size={14} />
+                          ) : (
+                            <ChevronDown size={14} />
+                          )}
+                        </button>
+                      ) : (
+                        <span className="w-[18px] shrink-0" />
+                      )}
+                      <span>{row.displayNo}</span>
+                    </div>
+                  </td>
                   <td className="p-3">
                     <input
                       type="text"
@@ -1951,8 +2161,8 @@ export default function CostEstimator() {
                           e.target.value
                         )
                       }
-                      className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${row.isMain ? "font-semibold" : "pl-6"}`}
-                      placeholder={row.isMain ? "ระบุ Main item..." : "ระบุ Sub item..."}
+                      className={`w-full bg-transparent border-b border-transparent focus:border-blue-500 outline-none ${row.level === 0 ? "font-semibold" : ""}`}
+                      placeholder={row.level === 0 ? "ระบุ Main item..." : row.level === 1 ? "ระบุ Sub item..." : "ระบุ Second sub item..."}
                     />
                   </td>
                   <td className="p-3">
@@ -1989,10 +2199,12 @@ export default function CostEstimator() {
                   <td className="p-3">
                     <input
                       type="text"
-                      value={item.qty === 0 ? "" : (item._qtyInput !== undefined ? item._qtyInput : Number(item.qty).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }))}
+                      inputMode="decimal"
+                      value={item._qtyInput !== undefined ? item._qtyInput : (item.qty === 0 ? "" : Number(item.qty).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
                       onBlur={() => {
-                        // When blurring, format it back to the clean comma version.
-                        const num = safeFloat(item._qtyInput !== undefined ? item._qtyInput : item.qty);
+                        const num = roundToTwoDecimals(
+                          item._qtyInput !== undefined ? item._qtyInput : item.qty
+                        );
                         handleInputChange(
                           setDirectItems,
                           item.id,
@@ -2002,20 +2214,11 @@ export default function CostEstimator() {
                         handleInputChange(setDirectItems, item.id, "_qtyInput", undefined); // Clear temp
                       }}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        // Allow typing decimals and commas
-                        handleInputChange(
-                          setDirectItems,
+                        handleDirectNumericInputChange(
+                          e,
                           item.id,
                           "_qtyInput",
-                          val
-                        );
-                        // Also update real parsed qty immediately for total calculations
-                        handleInputChange(
-                          setDirectItems,
-                          item.id,
-                          "qty",
-                          safeFloat(val.replace(/,/g, ""))
+                          "qty"
                         );
                       }}
                       className="w-full bg-transparent border p-1 rounded text-right font-semibold focus:ring-2 focus:ring-blue-500 outline-none"
@@ -2025,16 +2228,20 @@ export default function CostEstimator() {
                   <td className="p-3 bg-blue-50/50">
                     <input
                       type="text"
-                      value={item.matRate === 0 && !item._matRateInput ? "" : (item._matRateInput !== undefined ? item._matRateInput : Number(item.matRate).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }))}
+                      inputMode="decimal"
+                      value={item._matRateInput !== undefined ? item._matRateInput : (item.matRate === 0 ? "" : Number(item.matRate).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
                       onBlur={() => {
-                        const num = safeFloat(item._matRateInput !== undefined ? item._matRateInput : item.matRate);
+                        const num = roundToTwoDecimals(item._matRateInput !== undefined ? item._matRateInput : item.matRate);
                         handleInputChange(setDirectItems, item.id, "matRate", num);
                         handleInputChange(setDirectItems, item.id, "_matRateInput", undefined);
                       }}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        handleInputChange(setDirectItems, item.id, "_matRateInput", val);
-                        handleInputChange(setDirectItems, item.id, "matRate", safeFloat(val.replace(/,/g, "")));
+                        handleDirectNumericInputChange(
+                          e,
+                          item.id,
+                          "_matRateInput",
+                          "matRate"
+                        );
                       }}
                       className="w-full bg-transparent border-b border-blue-200 focus:border-blue-500 outline-none text-right placeholder-blue-300"
                       placeholder="0.00"
@@ -2043,16 +2250,20 @@ export default function CostEstimator() {
                   <td className="p-3 bg-orange-50/50">
                     <input
                       type="text"
-                      value={item.labRate === 0 && !item._labRateInput ? "" : (item._labRateInput !== undefined ? item._labRateInput : Number(item.labRate).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }))}
+                      inputMode="decimal"
+                      value={item._labRateInput !== undefined ? item._labRateInput : (item.labRate === 0 ? "" : Number(item.labRate).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
                       onBlur={() => {
-                        const num = safeFloat(item._labRateInput !== undefined ? item._labRateInput : item.labRate);
+                        const num = roundToTwoDecimals(item._labRateInput !== undefined ? item._labRateInput : item.labRate);
                         handleInputChange(setDirectItems, item.id, "labRate", num);
                         handleInputChange(setDirectItems, item.id, "_labRateInput", undefined);
                       }}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        handleInputChange(setDirectItems, item.id, "_labRateInput", val);
-                        handleInputChange(setDirectItems, item.id, "labRate", safeFloat(val.replace(/,/g, "")));
+                        handleDirectNumericInputChange(
+                          e,
+                          item.id,
+                          "_labRateInput",
+                          "labRate"
+                        );
                       }}
                       className="w-full bg-transparent border-b border-orange-200 focus:border-orange-500 outline-none text-right placeholder-orange-300"
                       placeholder="0.00"
@@ -2061,16 +2272,20 @@ export default function CostEstimator() {
                   <td className="p-3 bg-purple-50/50">
                     <input
                       type="text"
-                      value={item.eqRate === 0 && !item._eqRateInput ? "" : (item._eqRateInput !== undefined ? item._eqRateInput : Number(item.eqRate).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }))}
+                      inputMode="decimal"
+                      value={item._eqRateInput !== undefined ? item._eqRateInput : (item.eqRate === 0 ? "" : Number(item.eqRate).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }))}
                       onBlur={() => {
-                        const num = safeFloat(item._eqRateInput !== undefined ? item._eqRateInput : item.eqRate);
+                        const num = roundToTwoDecimals(item._eqRateInput !== undefined ? item._eqRateInput : item.eqRate);
                         handleInputChange(setDirectItems, item.id, "eqRate", num);
                         handleInputChange(setDirectItems, item.id, "_eqRateInput", undefined);
                       }}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        handleInputChange(setDirectItems, item.id, "_eqRateInput", val);
-                        handleInputChange(setDirectItems, item.id, "eqRate", safeFloat(val.replace(/,/g, "")));
+                        handleDirectNumericInputChange(
+                          e,
+                          item.id,
+                          "_eqRateInput",
+                          "eqRate"
+                        );
                       }}
                       className="w-full bg-transparent border-b border-purple-200 focus:border-purple-500 outline-none text-right placeholder-purple-300"
                       placeholder="0.00"
@@ -2085,11 +2300,11 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-3 flex items-center justify-center gap-2">
-                    {row.isMain && (
+                    {row.canAddChild && (
                       <button
                         onClick={() => handleAddDirectSubItem(item.id)}
                         className="p-1.5 text-emerald-600 hover:text-white hover:bg-emerald-600 rounded-full transition-colors"
-                        title="Add Sub Item"
+                        title={row.level === 0 ? "Add Sub Item" : "Add Second Sub Item"}
                       >
                         <Plus size={16} />
                       </button>
