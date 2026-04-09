@@ -51,13 +51,23 @@ import {
   Calendar,
   Database,
   Paperclip,
+  Shield,
+  LogOut,
+  UserPlus,
+  UserCog,
+  Eye,
+  Lock,
+  Unlock,
 } from "lucide-react";
 
 // --- Firebase SDK Imports ---
 import {
-  signInAnonymously,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
   onAuthStateChanged,
-  signInWithCustomToken,
+  updateProfile,
 } from "firebase/auth";
 import {
   collection,
@@ -65,21 +75,29 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   query,
   orderBy,
   limit,
   serverTimestamp,
+  runTransaction,
+  arrayUnion,
+  arrayRemove,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { auth, db, storage } from "./firebaseConfig";
+import { auth, db, storage, googleProvider } from "./firebaseConfig";
 
-// Shared collection path: CMG Al-Estimation > root > biddings
-const FIRESTORE_COLLECTION = ["CMG Al-Estimation", "root", "biddings"] as const;
+// Shared collection paths
+const APP_NAME = "CMG Al-Estimation";
+const FIRESTORE_COLLECTION = [APP_NAME, "root", "biddings"] as const;
+const USERS_COLLECTION    = [APP_NAME, "root", "users"] as const;
+const APPMETA_DOC         = [APP_NAME, "root", "appMeta", "config"] as const;
+const ACTIVITY_COLLECTION = [APP_NAME, "root", "activityLogs"] as const;
 
 // --- Constants & Default Data ---
 
-const APP_VERSION = "v.2.6 (New Total Cost Structure)";
+const APP_VERSION = "v.2.7 (Role System)";
 
 const DEFAULT_PROJECT_INFO = {
   biddingNo: "CMG-BID-XX-XXX",
@@ -399,16 +417,127 @@ const Card = ({ children, title, icon: Icon, action, className = "" }: any) => (
   </div>
 );
 
+// --- Role Definitions ---
+const ALL_ROLES = ["MasterAdmin", "BDT", "AssignTo", "View", "Staff", "Viewer", "Creator"] as const;
+type Role = typeof ALL_ROLES[number];
+
+const ROLE_LABELS: Record<Role, string> = {
+  MasterAdmin: "Master Admin",
+  BDT: "BDT",
+  AssignTo: "Assign To",
+  View: "View Only",
+  Staff: "Staff",
+  Viewer: "Viewer",
+  Creator: "Creator",
+};
+
+const ROLE_COLORS: Record<Role, string> = {
+  MasterAdmin: "bg-red-100 text-red-700 border-red-200",
+  BDT: "bg-blue-100 text-blue-700 border-blue-200",
+  AssignTo: "bg-green-100 text-green-700 border-green-200",
+  View: "bg-slate-100 text-slate-600 border-slate-200",
+  Staff: "bg-purple-100 text-purple-700 border-purple-200",
+  Viewer: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  Creator: "bg-orange-100 text-orange-700 border-orange-200",
+};
+
+// --- Helper: log activity (non-blocking) ---
+const logActivity = (action: string, uid: string, extra?: any) => {
+  const logRef = doc(collection(db, ...ACTIVITY_COLLECTION));
+  setDoc(logRef, { action, uid, ...extra, createdAt: serverTimestamp() }).catch(() => {});
+};
+
+// --- Helper: create/update user profile ---
+const createUserProfileDoc = async (firebaseUser: any, overrides: any = {}) => {
+  const userRef = doc(db, ...USERS_COLLECTION, firebaseUser.uid);
+  const existing = await getDoc(userRef);
+  if (existing.exists()) return existing.data();
+
+  // Detect first user using appMeta transaction
+  const metaRef = doc(db, ...APPMETA_DOC);
+  let isFirstUser = false;
+  try {
+    await runTransaction(db, async (tx: any) => {
+      const metaSnap = await tx.get(metaRef);
+      if (!metaSnap.exists() || !metaSnap.data()?.firstUserRegistered) {
+        isFirstUser = true;
+        tx.set(metaRef, { firstUserRegistered: true, createdAt: serverTimestamp() }, { merge: true });
+      }
+    });
+  } catch (e) { /* silent */ }
+
+  const profile = {
+    uid: firebaseUser.uid,
+    email: firebaseUser.email || "",
+    firstName: overrides.firstName || firebaseUser.displayName?.split(" ")[0] || "",
+    lastName: overrides.lastName || firebaseUser.displayName?.split(" ").slice(1).join(" ") || "",
+    position: overrides.position || "",
+    department: overrides.department || "",
+    roles: isFirstUser ? ["MasterAdmin"] : ["Staff"],
+    status: isFirstUser ? "approved" : "pending",
+    assignedProjects: [],
+    photoURL: firebaseUser.photoURL || "",
+    isFirstUser,
+    createdAt: serverTimestamp(),
+  };
+  await setDoc(userRef, profile);
+  return profile;
+};
+
 // --- Main Application Component ---
 export default function CostEstimator() {
   const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Login state
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+
+  // Register state
+  const [showRegister, setShowRegister] = useState(false);
+  const [regEmail, setRegEmail] = useState("");
+  const [regPassword, setRegPassword] = useState("");
+  const [regFirstName, setRegFirstName] = useState("");
+  const [regLastName, setRegLastName] = useState("");
+  const [regPosition, setRegPosition] = useState("");
+  const [regDepartment, setRegDepartment] = useState("");
+  const [regError, setRegError] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  // Profile dropdown
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showProfileEdit, setShowProfileEdit] = useState(false);
+  const [editFirstName, setEditFirstName] = useState("");
+  const [editLastName, setEditLastName] = useState("");
+  const [editPosition, setEditPosition] = useState("");
+  const [editDepartment, setEditDepartment] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
+  // App data
   const [biddings, setBiddings] = useState<any[]>([]);
+  const [allUsers, setAllUsers] = useState<any[]>([]);
   const [selectedBiddingId, setSelectedBiddingId] = useState<any>(null);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [activeMenu, setActiveMenu] = useState("project");
   const [collapsedMainIds, setCollapsedMainIds] = useState<any[]>([]);
+
+  // User management
+  const [showUserMgmt, setShowUserMgmt] = useState(false);
+  const [userMgmtTab, setUserMgmtTab] = useState<"list"|"add">("list");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserFirstName, setNewUserFirstName] = useState("");
+  const [newUserLastName, setNewUserLastName] = useState("");
+  const [newUserPosition, setNewUserPosition] = useState("");
+  const [newUserRoles, setNewUserRoles] = useState<Role[]>(["Staff"]);
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [isSavingUser, setIsSavingUser] = useState(false);
+  const [assignTargetUid, setAssignTargetUid] = useState<string | null>(null);
 
   const [draftProject, setDraftProject] = useState<any>(null);
 
@@ -419,77 +548,304 @@ export default function CostEstimator() {
   const bidDocFileRef = useRef<any>(null);
   const bidDocTargetIdRef = useRef<any>(null);
 
-  // --- Auth & Data Loading ---
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (
-          typeof __initial_auth_token !== "undefined" &&
-          __initial_auth_token
-        ) {
-          try {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } catch (e) {
-            await signInAnonymously(auth);
-          }
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Auth Init Error:", error);
-      }
-    };
-    initAuth();
+  // --- Role Helpers (union of all roles) ---
+  const roles: Role[] = userProfile?.roles || [];
+  const hasRole = (...check: Role[]) => check.some(r => roles.includes(r));
+  const canCreateProject = hasRole("MasterAdmin", "BDT", "Creator");
+  const canDeleteProject = hasRole("MasterAdmin", "BDT");
+  const canAssignUsers   = hasRole("MasterAdmin", "BDT");
+  const canManageUsers   = hasRole("MasterAdmin");
+  const pendingCount     = allUsers.filter(u => u.status === "pending").length;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
+  // Debug logging for roles
+  console.log("[Role Check] userProfile.roles:", roles, "canManageUsers:", canManageUsers);
+
+  const canEditProject = (bid: any) => {
+    if (hasRole("MasterAdmin", "BDT", "Creator")) return true;
+    if (hasRole("AssignTo")) return (bid?.assignedTo || []).includes(user?.uid);
+    return false;
+  };
+  const canViewProject = (bid: any) => {
+    if (hasRole("MasterAdmin", "BDT", "Viewer", "Creator")) return true;
+    return (bid?.assignedTo || []).includes(user?.uid);
+  };
+  // --- Auth: listen + load profile realtime ---
+  useEffect(() => {
+    console.log("[Auth] Initializing onAuthStateChanged...");
+    const unsub = onAuthStateChanged(auth, async (currentUser) => {
+      console.log("[Auth] onAuthStateChanged fired, user:", currentUser?.uid || null);
       setUser(currentUser);
-      if (!currentUser) {
-        // Auth resolved but no user (shouldn't happen with anonymous) - unblock UI
-        setIsDataLoaded(true);
+      if (currentUser) {
+        // Realtime profile listener
+        const profileRef = doc(db, ...USERS_COLLECTION, currentUser.uid);
+        console.log("[Auth] Setting up profile listener for:", currentUser.uid);
+        
+        // First, check if profile exists - if not, create it
+        const profileSnap = await getDoc(profileRef);
+        console.log("[Auth] Initial profile check, exists:", profileSnap.exists());
+        
+        if (!profileSnap.exists()) {
+          console.log("[Auth] Profile not found, creating...");
+          await createUserProfileDoc(currentUser);
+        }
+        
+        const unsubProfile = onSnapshot(profileRef, (snap: any) => {
+          console.log("[Auth] Profile snapshot received, exists:", snap.exists());
+          if (snap.exists()) {
+            setUserProfile({ uid: snap.id, ...snap.data() });
+          } else {
+            setUserProfile(null);
+          }
+        }, (err: any) => {
+          console.error("[Auth] Profile listener error:", err);
+          setUserProfile(null);
+        });
+        // Store unsub so we can clean up
+        (currentUser as any)._profileUnsub = unsubProfile;
+      } else {
+        setUserProfile(null);
       }
+      setAuthLoading(false);
+      console.log("[Auth] Auth loading complete");
+    }, (err: any) => {
+      console.error("[Auth] onAuthStateChanged error:", err);
+      setAuthLoading(false);
     });
-    return () => unsubscribeAuth();
+    
+    // Timeout fallback - force loading to complete after 5 seconds
+    const timeoutId = setTimeout(() => {
+      console.log("[Auth] Timeout reached, forcing loading complete");
+      setAuthLoading(false);
+    }, 5000);
+    
+    return () => {
+      clearTimeout(timeoutId);
+      unsub();
+    };
   }, []);
 
-  // Fetch from PUBLIC shared collection
+  // Refresh profile manually
+  const refreshProfile = async () => {
+    if (!user) return;
+    const snap = await getDoc(doc(db, ...USERS_COLLECTION, user.uid));
+    if (snap.exists()) setUserProfile({ uid: snap.id, ...snap.data() });
+  };
+
+  // --- Login with Email ---
+  const handleLogin = async (e: any) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError("");
+    try {
+      const cred = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      logActivity("LOGIN", cred.user.uid, { method: "email" });
+    } catch (err: any) {
+      const code = err.code || "";
+      if (code.includes("invalid-credential") || code.includes("wrong-password") || code.includes("user-not-found")) {
+        setLoginError("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+      } else {
+        setLoginError("เกิดข้อผิดพลาด: " + err.message);
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // --- Login with Google ---
+  const handleGoogleLogin = async () => {
+    setIsLoggingIn(true);
+    setLoginError("");
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      const firebaseUser = cred.user;
+      // Create profile if new user
+      const userRef = doc(db, ...USERS_COLLECTION, firebaseUser.uid);
+      const snap = await getDoc(userRef);
+      if (!snap.exists()) {
+        await createUserProfileDoc(firebaseUser);
+      }
+      await refreshProfile();
+      logActivity("LOGIN", firebaseUser.uid, { method: "google" });
+    } catch (err: any) {
+      if (!err.code?.includes("popup-closed")) {
+        setLoginError("Google sign-in ล้มเหลว: " + (err.message || ""));
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // --- Register with Email ---
+  const handleRegister = async (e: any) => {
+    e.preventDefault();
+    if (!regFirstName || !regLastName || !regEmail || !regPassword) {
+      setRegError("กรุณากรอกข้อมูลให้ครบถ้วน"); return;
+    }
+    setIsRegistering(true);
+    setRegError("");
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, regEmail, regPassword);
+      await updateProfile(cred.user, { displayName: `${regFirstName} ${regLastName}` });
+      await createUserProfileDoc(cred.user, {
+        firstName: regFirstName, lastName: regLastName,
+        position: regPosition, department: regDepartment,
+      });
+      await refreshProfile();
+      logActivity("REGISTER", cred.user.uid, { method: "email" });
+      setShowRegister(false);
+    } catch (err: any) {
+      const code = err.code || "";
+      if (code.includes("email-already-in-use")) setRegError("อีเมลนี้ถูกใช้งานแล้ว");
+      else if (code.includes("weak-password")) setRegError("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร");
+      else setRegError("เกิดข้อผิดพลาด: " + err.message);
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setUserProfile(null);
+    setSelectedBiddingId(null);
+    setBiddings([]);
+    setIsDataLoaded(false);
+  };
+
+  // Fetch biddings — filter by role (uses union of roles[])
   useEffect(() => {
-    if (user) {
-      setIsDataLoaded(false);
-      const biddingsRef = collection(
-        db,
-        ...FIRESTORE_COLLECTION
-      );
-      const q = query(biddingsRef, orderBy("createdAt", "desc"), limit(50));
-      const unsubscribeData = onSnapshot(
-        q,
-        (snapshot: any) => {
-          const loadedBiddings = snapshot.docs.map((doc: any) => ({
-            id: doc.id,
-            ...doc.data(),
-          }));
-          setBiddings((prev: any[]) =>
-            loadedBiddings.map((loaded: any) => {
-              const existing = prev.find((b: any) => b.id === loaded.id);
-              if (!existing?.directItems || !loaded?.directItems) return loaded;
-              return {
-                ...loaded,
-                directItems: mergeDirectItemTransientFields(
-                  loaded.directItems,
-                  existing.directItems
-                ),
-              };
-            })
-          );
-          setIsDataLoaded(true);
-        },
-        (error: any) => {
-          console.error("Data Fetch Error:", error);
-          setIsDataLoaded(true);
+    if (!user || !userProfile) return;
+    setIsDataLoaded(false);
+    const biddingsRef = collection(db, ...FIRESTORE_COLLECTION);
+    const q = query(biddingsRef, orderBy("createdAt", "desc"), limit(100));
+    const unsubscribeData = onSnapshot(
+      q,
+      (snapshot: any) => {
+        const all = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+        const r: Role[] = userProfile.roles || [];
+        const seeAll = r.some(x => ["MasterAdmin","BDT","Viewer","Creator"].includes(x));
+        const filtered = seeAll
+          ? all
+          : all.filter((b: any) => (b.assignedTo || []).includes(user.uid));
+        setBiddings((prev: any[]) =>
+          filtered.map((loaded: any) => {
+            const existing = prev.find((b: any) => b.id === loaded.id);
+            if (!existing?.directItems || !loaded?.directItems) return loaded;
+            return {
+              ...loaded,
+              directItems: mergeDirectItemTransientFields(
+                loaded.directItems,
+                existing.directItems
+              ),
+            };
+          })
+        );
+        setIsDataLoaded(true);
+      },
+      (error: any) => {
+        console.error("Data Fetch Error:", error);
+        setIsDataLoaded(true);
+      }
+    );
+    return () => unsubscribeData();
+  }, [user, userProfile]);
+
+  // Fetch all users (realtime — MasterAdmin / BDT only)
+  useEffect(() => {
+    if (!user || !userProfile) return;
+    const r: Role[] = userProfile.roles || [];
+    if (!r.some(x => ["MasterAdmin","BDT"].includes(x))) return;
+    const usersRef = collection(db, ...USERS_COLLECTION);
+    const unsubUsers = onSnapshot(usersRef, (snap: any) => {
+      setAllUsers(snap.docs.map((d: any) => ({ uid: d.id, ...d.data() })));
+    });
+    return () => unsubUsers();
+  }, [user, userProfile]);
+
+  // --- Profile Edit Handler ---
+  const handleSaveProfile = async () => {
+    if (!user) return;
+    setIsSavingProfile(true);
+    try {
+      await updateDoc(doc(db, ...USERS_COLLECTION, user.uid), {
+        firstName: editFirstName,
+        lastName: editLastName,
+        position: editPosition,
+        department: editDepartment,
+      });
+      await updateProfile(user, { displayName: `${editFirstName} ${editLastName}` });
+      setShowProfileEdit(false);
+    } catch (e) { /* silent */ }
+    finally { setIsSavingProfile(false); }
+  };
+
+  // --- User Management Handlers ---
+  const handleCreateUser = async () => {
+    if (!newUserEmail || !newUserPassword || !newUserFirstName) {
+      alert("กรุณากรอกข้อมูลให้ครบถ้วน"); return;
+    }
+    setIsSavingUser(true);
+    try {
+      const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
+      const res = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: newUserEmail, password: newUserPassword, returnSecureToken: true }),
         }
       );
-      return () => unsubscribeData();
-    }
-  }, [user]);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      await setDoc(doc(db, ...USERS_COLLECTION, data.localId), {
+        uid: data.localId,
+        email: newUserEmail,
+        firstName: newUserFirstName,
+        lastName: newUserLastName,
+        position: newUserPosition,
+        department: "",
+        roles: newUserRoles,
+        status: "approved",
+        assignedProjects: [],
+        photoURL: "",
+        isFirstUser: false,
+        createdAt: serverTimestamp(),
+      });
+      setNewUserEmail(""); setNewUserPassword(""); setNewUserFirstName("");
+      setNewUserLastName(""); setNewUserPosition(""); setNewUserRoles(["Staff"]);
+      setUserMgmtTab("list");
+      alert(`สร้างผู้ใช้ ${newUserEmail} เรียบร้อยแล้ว`);
+    } catch (err: any) {
+      alert("เกิดข้อผิดพลาด: " + err.message);
+    } finally { setIsSavingUser(false); }
+  };
+
+  const handleApproveUser = async (uid: string, approved: boolean) => {
+    await updateDoc(doc(db, ...USERS_COLLECTION, uid), { status: approved ? "approved" : "rejected" });
+  };
+
+  const handleUpdateUserRoles = async (uid: string, updatedRoles: Role[]) => {
+    await updateDoc(doc(db, ...USERS_COLLECTION, uid), { roles: updatedRoles });
+  };
+
+  const handleToggleRoleForUser = async (uid: string, currentRoles: Role[], role: Role) => {
+    const updated = currentRoles.includes(role)
+      ? currentRoles.filter(r => r !== role)
+      : [...currentRoles, role];
+    await handleUpdateUserRoles(uid, updated);
+  };
+
+  const handleAssignProjectToUser = async (uid: string, projectId: string, assign: boolean) => {
+    await updateDoc(doc(db, ...USERS_COLLECTION, uid), {
+      assignedProjects: assign ? arrayUnion(projectId) : arrayRemove(projectId),
+    });
+  };
+
+  const handleAssignUser = async (biddingId: string, uid: string, assign: boolean) => {
+    await updateDoc(doc(db, ...FIRESTORE_COLLECTION, biddingId), {
+      assignedTo: assign ? arrayUnion(uid) : arrayRemove(uid),
+    });
+    await handleAssignProjectToUser(uid, biddingId, assign);
+  };
 
   // --- Firestore Actions ---
   // Helper: strip temporary UI-only fields (like _qtyInput) before saving
@@ -524,6 +880,7 @@ export default function CostEstimator() {
   };
 
   const handleCreateNewProject = () => {
+    if (!canCreateProject) { alert("คุณไม่มีสิทธิ์สร้างโครงการ"); return; }
     const randomSuffix = Math.floor(Math.random() * 1000)
       .toString()
       .padStart(3, "0");
@@ -534,6 +891,8 @@ export default function CostEstimator() {
 
     const newDraft = {
       id: "DRAFT",
+      createdBy: user?.uid || "",
+      assignedTo: [],
       project: { ...DEFAULT_PROJECT_INFO, biddingNo: biddingNo },
       directItems: [],
       staffEnabled: true,
@@ -580,6 +939,8 @@ export default function CostEstimator() {
 
       await setDoc(docRef, {
         ...dataToSave,
+        createdBy: user.uid,
+        assignedTo: [],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -597,7 +958,7 @@ export default function CostEstimator() {
 
   const deleteBiddingFromFirestore = async (biddingId: any, e: any) => {
     if (e) e.stopPropagation();
-    if (!user) return;
+    if (!user || !canDeleteProject) { alert("คุณไม่มีสิทธิ์ลบโครงการ"); return; }
     if (
       window.confirm("ยืนยันการลบโครงการนี้? การกระทำนี้ไม่สามารถย้อนกลับได้")
     ) {
@@ -644,6 +1005,10 @@ export default function CostEstimator() {
     if (selectedBiddingId === "DRAFT") return draftProject;
     return biddings.find((b) => b.id === selectedBiddingId);
   }, [biddings, selectedBiddingId, draftProject]);
+
+  // AssignTo => can edit inside their assigned projects but cannot delete the project itself
+  // View/Viewer/Staff => read-only inside the editor
+  const isProjectEditable = currentBidding ? canEditProject(currentBidding) : false;
 
   const updateCurrentBidding = (section: any, newValueOrFn: any) => {
     if (!currentBidding) return;
@@ -1656,122 +2021,429 @@ export default function CostEstimator() {
     document.body.removeChild(link);
   };
 
-  const renderDashboard = () => (
-    <div className="min-h-screen bg-slate-50 flex flex-col items-center py-12 px-4 relative">
-      <div className="w-full max-w-5xl space-y-8">
-        <div className="text-center space-y-4">
-          <div className="inline-flex items-center justify-center p-4 bg-white rounded-full shadow-lg text-blue-600 mb-4">
-            <Calculator size={48} />
+  // --- Profile Edit Modal ---
+  const renderProfileModal = () => {
+    if (!showProfileEdit) return null;
+    return (
+      <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+          <div className="flex items-center justify-between p-5 border-b">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><UserCog size={18}/> แก้ไขโปรไฟล์</h2>
+            <button onClick={() => setShowProfileEdit(false)} className="text-slate-400 hover:text-slate-700 text-2xl font-bold leading-none">×</button>
           </div>
-          <h1 className="text-4xl font-bold text-slate-800">
-            CMG Cost Estimator
-          </h1>
-          <p className="text-slate-500 max-w-2xl mx-auto">
-            ระบบประมาณราคาก่อสร้างและจัดการต้นทุนโครงการ (Construction Cost
-            Estimation)
-          </p>
-          <div className="flex justify-center items-center gap-2 text-xs text-orange-600 bg-orange-50 py-1 px-3 rounded-full w-fit mx-auto border border-orange-200">
-            <Database size={12} /> Public Data Mode: Projects are shared across all users
+          <div className="p-5 space-y-4">
+            {userProfile?.photoURL && (
+              <div className="flex justify-center">
+                <img src={userProfile.photoURL} alt="avatar" className="w-20 h-20 rounded-full object-cover border-4 border-blue-200"/>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">ชื่อ</label>
+                <input value={editFirstName} onChange={e => setEditFirstName(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">นามสกุล</label>
+                <input value={editLastName} onChange={e => setEditLastName(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">ตำแหน่ง</label>
+              <input value={editPosition} onChange={e => setEditPosition(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">แผนก</label>
+              <input value={editDepartment} onChange={e => setEditDepartment(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/>
+            </div>
+            <button
+              onClick={handleSaveProfile}
+              disabled={isSavingProfile}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
+            >
+              {isSavingProfile ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>} บันทึก
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // --- User Management Panel (rendered in-body) ---
+  const renderUserMgmt = () => {
+    if (!showUserMgmt || !canManageUsers) return null;
+    return (
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-4 pt-16 overflow-y-auto">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mb-8">
+          <div className="flex items-center justify-between p-6 border-b bg-slate-50 rounded-t-2xl">
+            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+              <UserCog size={22} className="text-blue-600"/> จัดการผู้ใช้งาน
+              {pendingCount > 0 && <span className="ml-2 bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{pendingCount} รออนุมัติ</span>}
+            </h2>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setUserMgmtTab("list")} className={`px-4 py-1.5 text-sm rounded-lg font-medium transition-colors ${userMgmtTab==="list"?"bg-blue-600 text-white":"text-slate-600 hover:bg-slate-100"}`}>รายชื่อผู้ใช้</button>
+              <button onClick={() => setUserMgmtTab("add")} className={`px-4 py-1.5 text-sm rounded-lg font-medium transition-colors ${userMgmtTab==="add"?"bg-blue-600 text-white":"text-slate-600 hover:bg-slate-100"}`}>+ เพิ่มผู้ใช้</button>
+              <button onClick={() => setShowUserMgmt(false)} className="ml-2 text-slate-400 hover:text-slate-700 text-2xl font-bold leading-none">×</button>
+            </div>
+          </div>
+
+          {userMgmtTab === "add" && (
+            <div className="p-6">
+              <div className="bg-slate-50 rounded-xl p-5 border border-slate-200 space-y-4">
+                <h3 className="font-semibold text-slate-700 flex items-center gap-2"><UserPlus size={16}/> เพิ่มผู้ใช้ใหม่</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-xs text-slate-500 mb-1">ชื่อ *</label><input value={newUserFirstName} onChange={e=>setNewUserFirstName(e.target.value)} placeholder="ชื่อ" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/></div>
+                  <div><label className="block text-xs text-slate-500 mb-1">นามสกุล</label><input value={newUserLastName} onChange={e=>setNewUserLastName(e.target.value)} placeholder="นามสกุล" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/></div>
+                  <div><label className="block text-xs text-slate-500 mb-1">Email *</label><input value={newUserEmail} onChange={e=>setNewUserEmail(e.target.value)} type="email" placeholder="email@cmg.com" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/></div>
+                  <div><label className="block text-xs text-slate-500 mb-1">Password *</label><input value={newUserPassword} onChange={e=>setNewUserPassword(e.target.value)} type="password" placeholder="อย่างน้อย 6 ตัว" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/></div>
+                  <div className="col-span-2"><label className="block text-xs text-slate-500 mb-1">ตำแหน่ง</label><input value={newUserPosition} onChange={e=>setNewUserPosition(e.target.value)} placeholder="ตำแหน่งงาน" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-400"/></div>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-2">Role (เลือกได้หลาย role)</label>
+                  <div className="flex flex-wrap gap-2">
+                    {ALL_ROLES.map(r => (
+                      <button key={r} type="button"
+                        onClick={() => setNewUserRoles(prev => prev.includes(r) ? prev.filter(x=>x!==r) : [...prev,r])}
+                        className={`px-3 py-1 text-xs font-semibold rounded-full border transition-colors ${newUserRoles.includes(r) ? ROLE_COLORS[r] + " opacity-100" : "bg-white text-slate-500 border-slate-300 opacity-70 hover:opacity-100"}`}
+                      >{ROLE_LABELS[r]}</button>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={handleCreateUser} disabled={isSavingUser} className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50">
+                  {isSavingUser ? <Loader2 size={14} className="animate-spin"/> : <UserPlus size={14}/>} สร้างผู้ใช้
+                </button>
+              </div>
+            </div>
+          )}
+
+          {userMgmtTab === "list" && (
+            <div className="p-6 space-y-3 max-h-[70vh] overflow-y-auto">
+              {/* Pending first */}
+              {allUsers.filter(u=>u.status==="pending").length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                  <h3 className="text-sm font-bold text-amber-800 mb-3 flex items-center gap-2"><Shield size={14}/> รออนุมัติ ({allUsers.filter(u=>u.status==="pending").length})</h3>
+                  <div className="space-y-2">
+                    {allUsers.filter(u=>u.status==="pending").map(u => (
+                      <div key={u.uid} className="flex items-center gap-3 bg-white border border-amber-200 rounded-lg px-4 py-3">
+                        {u.photoURL ? <img src={u.photoURL} alt="" className="w-9 h-9 rounded-full object-cover"/> : <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 font-bold text-sm">{(u.firstName||u.email||"?")[0].toUpperCase()}</div>}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-slate-800 text-sm">{u.firstName} {u.lastName}</p>
+                          <p className="text-xs text-slate-400 truncate">{u.email} {u.position && `· ${u.position}`}</p>
+                        </div>
+                        <button onClick={() => handleApproveUser(u.uid, true)} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors">อนุมัติ</button>
+                        <button onClick={() => handleApproveUser(u.uid, false)} className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold rounded-lg transition-colors">ปฏิเสธ</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* All users */}
+              <h3 className="text-sm font-semibold text-slate-600 mb-2">ผู้ใช้งานทั้งหมด ({allUsers.length})</h3>
+              {allUsers.map(u => {
+                const uRoles: Role[] = u.roles || [];
+                const isMe = u.uid === user?.uid;
+                const isExpanded = assignTargetUid === u.uid;
+                return (
+                  <div key={u.uid} className={`border rounded-xl overflow-hidden transition-all ${u.status==="rejected"?"border-red-200 bg-red-50":u.status==="pending"?"border-amber-200 bg-amber-50":"border-slate-200 bg-white"}`}>
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      {u.photoURL
+                        ? <img src={u.photoURL} alt="" className="w-10 h-10 rounded-full object-cover border border-slate-200"/>
+                        : <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm">{(u.firstName||u.email||"?")[0].toUpperCase()}</div>
+                      }
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-slate-800 text-sm">{u.firstName} {u.lastName}</p>
+                          {isMe && <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-semibold">คุณ</span>}
+                          {u.status==="rejected" && <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-semibold">ปฏิเสธ</span>}
+                          {u.status==="pending" && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-semibold">รออนุมัติ</span>}
+                        </div>
+                        <p className="text-xs text-slate-400 truncate">{u.email}{u.position ? ` · ${u.position}` : ""}{u.department ? ` · ${u.department}` : ""}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {uRoles.map(r => <span key={r} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${ROLE_COLORS[r]||"bg-slate-100 text-slate-600 border-slate-200"}`}>{ROLE_LABELS[r]||r}</span>)}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setAssignTargetUid(isExpanded ? null : u.uid)}
+                        className="ml-2 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 rounded-lg transition-colors flex items-center gap-1"
+                      >
+                        <ChevronDown size={12} className={`transition-transform ${isExpanded?"rotate-180":""}`}/> จัดการ
+                      </button>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="border-t border-slate-200 bg-slate-50 p-4 space-y-4">
+                        {/* Roles multi-select */}
+                        <div>
+                          <p className="text-xs font-semibold text-slate-600 mb-2">Roles (คลิกเพื่อเปิด/ปิด)</p>
+                          <div className="flex flex-wrap gap-2">
+                            {ALL_ROLES.map(r => {
+                              const active = uRoles.includes(r);
+                              return (
+                                <button key={r} type="button"
+                                  disabled={isMe && r==="MasterAdmin"}
+                                  onClick={() => handleToggleRoleForUser(u.uid, uRoles, r)}
+                                  className={`px-3 py-1 text-xs font-semibold rounded-full border transition-colors ${active ? ROLE_COLORS[r] : "bg-white text-slate-400 border-slate-200"} ${isMe&&r==="MasterAdmin"?"opacity-50 cursor-not-allowed":""}`}
+                                >{ROLE_LABELS[r]}</button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        {/* Assign Projects */}
+                        <div>
+                          <p className="text-xs font-semibold text-slate-600 mb-2">โครงการที่ได้รับมอบหมาย</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto pr-1">
+                            {biddings.map(bid => {
+                              const assigned = (u.assignedProjects || []).includes(bid.id);
+                              return (
+                                <label key={bid.id} className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-xs transition-colors ${assigned?"bg-blue-50 border-blue-300 text-blue-800":"bg-white border-slate-200 text-slate-600 hover:border-blue-200"}`}>
+                                  <input type="checkbox" checked={assigned}
+                                    onChange={e => handleAssignUser(bid.id, u.uid, e.target.checked)}
+                                    className="w-3.5 h-3.5 accent-blue-600 shrink-0"
+                                  />
+                                  <span className="truncate font-medium">{bid.project?.biddingNo}</span>
+                                  <span className="truncate text-slate-400">{bid.project?.name}</span>
+                                </label>
+                              );
+                            })}
+                            {biddings.length === 0 && <p className="text-slate-400 text-xs col-span-2">ยังไม่มีโครงการ</p>}
+                          </div>
+                        </div>
+                        {/* Approve/Reject if pending */}
+                        {u.status === "pending" && (
+                          <div className="flex gap-2">
+                            <button onClick={() => handleApproveUser(u.uid, true)} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors">✓ อนุมัติ</button>
+                            <button onClick={() => handleApproveUser(u.uid, false)} className="flex-1 py-2 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold rounded-lg transition-colors">✕ ปฏิเสธ</button>
+                          </div>
+                        )}
+                        {u.status === "rejected" && (
+                          <button onClick={() => handleApproveUser(u.uid, true)} className="w-full py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 text-xs font-semibold rounded-lg transition-colors">↩ อนุมัติใหม่</button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderDashboard = () => {
+    // Update URL to /dashboard
+    if (window.location.pathname !== '/dashboard') {
+      window.history.pushState({}, '', '/dashboard');
+    }
+    
+    return (
+    <div className="min-h-screen bg-slate-50 flex">
+      {/* Sidebar for Dashboard */}
+      <div className="w-64 bg-slate-900 text-white min-h-screen fixed left-0 top-0 flex flex-col shadow-xl z-10">
+        {/* User profile card at top of sidebar */}
+        <div className="p-4 border-b border-slate-800">
+          <div className="flex items-center gap-3 mb-3">
+            {userProfile?.photoURL
+              ? <img src={userProfile.photoURL} alt="" className="w-10 h-10 rounded-full object-cover border-2 border-slate-600 shrink-0"/>
+              : <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm shrink-0">{(userProfile?.firstName||userProfile?.email||"U")[0].toUpperCase()}</div>
+            }
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-white truncate">{userProfile?.firstName} {userProfile?.lastName}</p>
+              <p className="text-xs text-slate-400 truncate">{userProfile?.email}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {(userProfile?.roles||[]).map((r: Role) => (
+              <span key={r} className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${ROLE_COLORS[r]||"bg-slate-700 text-slate-300 border-slate-600"}`}>{ROLE_LABELS[r]||r}</span>
+            ))}
           </div>
         </div>
 
-        {biddings.length === 0 ? (
-          <div className="bg-white rounded-2xl shadow-xl p-12 text-center border-2 border-dashed border-slate-200">
-            <FolderOpen size={64} className="mx-auto text-slate-300 mb-6" />
-            <h2 className="text-2xl font-bold text-slate-700 mb-2">
-              ยังไม่มีโครงการในระบบ
-            </h2>
-            <p className="text-slate-500 mb-8">
-              เริ่มต้นใช้งานโดยการสร้างโครงการใหม่
-            </p>
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+          <button
+            onClick={() => { /* Already on dashboard */ }}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 bg-blue-600 text-white shadow-lg shadow-blue-900/50"
+          >
+            <FolderOpen size={20} />
+            <span className="font-medium">โครงการทั้งหมด</span>
+          </button>
+        </nav>
+
+        {/* Bottom: User Management (MasterAdmin only) + Logout */}
+        <div className="p-4 border-t border-slate-800 space-y-1">
+          {canManageUsers && (
             <button
-              onClick={handleCreateNewProject}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-1 flex items-center gap-3 mx-auto"
+              onClick={() => setShowUserMgmt(true)}
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg text-xs font-medium transition-colors relative"
             >
-              <Plus size={24} /> สร้างโครงการใหม่ (New Project)
+              <UserCog size={15} className="text-blue-400"/> จัดการผู้ใช้งาน
+              {pendingCount > 0 && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">{pendingCount}</span>
+              )}
             </button>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="flex justify-between items-center">
-              <h2 className="text-xl font-bold text-slate-700 flex items-center gap-2">
-                <FolderOpen className="text-blue-500" /> โครงการของคุณ (
-                {biddings.length})
-              </h2>
-              <button
-                onClick={handleCreateNewProject}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow flex items-center gap-2 transition-all"
-              >
-                <Plus size={18} /> สร้างโครงการใหม่
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {biddings.map((bid) => (
-                <div
-                  key={bid.id}
-                  onClick={() => setSelectedBiddingId(bid.id)}
-                  className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group relative"
-                >
-                  <div className="absolute top-4 right-4 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => duplicateBiddingInFirestore(bid.id, e)}
-                      className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full"
-                      title="Copy Project"
-                    >
-                      <Copy size={16} />
-                    </button>
-                    <button
-                      onClick={(e) => deleteBiddingFromFirestore(bid.id, e)}
-                      className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full"
-                      title="Delete Project"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
-                      <Building2 size={24} />
-                    </div>
-                    <div>
-                      <div className="font-mono text-xs text-slate-500">
-                        {bid.project?.biddingNo}
-                      </div>
-                      <h3 className="font-bold text-slate-800 line-clamp-1">
-                        {bid.project?.name || "Untitled Project"}
-                      </h3>
-                    </div>
-                  </div>
-                  <div className="space-y-2 text-sm text-slate-500 mt-4 border-t pt-4">
-                    <div className="flex items-center gap-2">
-                      <Users size={14} /> {bid.project?.client || "-"}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Calendar size={14} /> Duration:{" "}
-                      {bid.project?.duration || 0} Months
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-400 mt-2">
-                      Last Update:{" "}
-                      {bid.updatedAt
-                        ? new Date(
-                          bid.updatedAt.seconds * 1000
-                        ).toLocaleDateString()
-                        : "New"}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-white hover:bg-red-700/40 rounded-lg text-xs transition-colors"
+          >
+            <LogOut size={14}/> ออกจากระบบ
+          </button>
+          <div className="text-[10px] text-slate-700 text-center font-mono pt-1">{APP_VERSION}</div>
+        </div>
       </div>
-      <div className="fixed bottom-2 left-2 text-xs text-slate-300 font-mono pointer-events-none z-50 opacity-60">
-        {APP_VERSION}
+
+      {/* Main Dashboard Content */}
+      <div className="flex-1 ml-64 py-12 px-4 relative">
+        {renderProfileModal()}
+        {renderUserMgmt()}
+
+        {/* Top-right: profile avatar + dropdown */}
+        <div className="fixed top-4 right-4 z-50">
+          <div className="relative">
+            <button
+              onClick={() => { setShowProfileMenu(v => !v); }}
+              className="flex items-center gap-2 bg-white border border-slate-200 rounded-full pl-2 pr-3 py-1.5 shadow-sm hover:shadow-md transition-all"
+            >
+              {userProfile?.photoURL
+                ? <img src={userProfile.photoURL} alt="" className="w-8 h-8 rounded-full object-cover"/>
+                : <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm">{(userProfile?.firstName||userProfile?.email||"U")[0].toUpperCase()}</div>
+              }
+              <div className="text-left">
+                <p className="text-xs font-semibold text-slate-700 leading-tight">{userProfile?.firstName} {userProfile?.lastName}</p>
+                <div className="flex flex-wrap gap-0.5 mt-0.5">
+                  {(userProfile?.roles||[]).slice(0,2).map((r: Role) => (
+                    <span key={r} className={`text-[9px] font-bold px-1 py-0 rounded border leading-tight ${ROLE_COLORS[r]||""}`}>{ROLE_LABELS[r]||r}</span>
+                  ))}
+                </div>
+              </div>
+              <ChevronDown size={12} className="text-slate-400 ml-1"/>
+            </button>
+
+            {showProfileMenu && (
+              <div className="absolute right-0 top-full mt-2 w-52 bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden z-50">
+                <button
+                  onClick={() => {
+                    setEditFirstName(userProfile?.firstName||"");
+                    setEditLastName(userProfile?.lastName||"");
+                    setEditPosition(userProfile?.position||"");
+                    setEditDepartment(userProfile?.department||"");
+                    setShowProfileEdit(true);
+                    setShowProfileMenu(false);
+                  }}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  <UserCog size={16} className="text-blue-500"/> แก้ไขโปรไฟล์
+                </button>
+                <div className="border-t border-slate-100"/>
+                <button
+                  onClick={() => { handleLogout(); setShowProfileMenu(false); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <LogOut size={16}/> ออกจากระบบ
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="max-w-5xl mx-auto space-y-8 mt-16">
+          <div className="text-center space-y-3">
+            <div className="inline-flex items-center justify-center p-4 bg-white rounded-full shadow-lg text-blue-600 mb-4">
+              <Calculator size={48} />
+            </div>
+            <h1 className="text-4xl font-bold text-slate-800">CMG Cost Estimator</h1>
+            <p className="text-slate-500 max-w-2xl mx-auto">ระบบประมาณราคาก่อสร้างและจัดการต้นทุนโครงการ</p>
+          </div>
+
+          {biddings.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-xl p-12 text-center border-2 border-dashed border-slate-200">
+              <FolderOpen size={64} className="mx-auto text-slate-300 mb-6" />
+              <h2 className="text-2xl font-bold text-slate-700 mb-2">ยังไม่มีโครงการในระบบ</h2>
+              <p className="text-slate-500 mb-8">{canCreateProject ? "เริ่มต้นใช้งานโดยการสร้างโครงการใหม่" : "ยังไม่มีโครงการที่ถูก Assign ให้คุณ"}</p>
+              {canCreateProject && (
+                <button onClick={handleCreateNewProject} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all flex items-center gap-3 mx-auto">
+                  <Plus size={24} /> สร้างโครงการใหม่ (New Project)
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-bold text-slate-700 flex items-center gap-2">
+                  <FolderOpen className="text-blue-500" /> โครงการ ({biddings.length})
+                </h2>
+                {canCreateProject && (
+                  <button onClick={handleCreateNewProject} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium shadow flex items-center gap-2 transition-all">
+                    <Plus size={18} /> สร้างโครงการใหม่
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {biddings.map((bid) => {
+                  const canEdit = canEditProject(bid);
+                  const canDel = canDeleteProject;
+                  return (
+                    <div
+                      key={bid.id}
+                      onClick={() => setSelectedBiddingId(bid.id)}
+                      className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-blue-300 transition-all cursor-pointer group relative"
+                    >
+                      <div className="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {canEdit && (
+                          <button onClick={e => duplicateBiddingInFirestore(bid.id, e)}
+                            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full" title="Copy">
+                            <Copy size={15}/>
+                          </button>
+                        )}
+                        {canDel && (
+                          <button onClick={e => deleteBiddingFromFirestore(bid.id, e)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full" title="Delete">
+                            <Trash2 size={15}/>
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Building2 size={24}/></div>
+                        <div>
+                          <div className="font-mono text-xs text-slate-500">{bid.project?.biddingNo}</div>
+                          <h3 className="font-bold text-slate-800 line-clamp-1">{bid.project?.name || "Untitled"}</h3>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5 text-sm text-slate-500 mt-4 border-t pt-4">
+                        <div className="flex items-center gap-2"><Users size={13}/> {bid.project?.client || "-"}</div>
+                        <div className="flex items-center gap-2"><Calendar size={13}/> {bid.project?.duration || 0} เดือน</div>
+                        {(bid.assignedTo||[]).length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {(bid.assignedTo as string[]).map((uid:string) => {
+                              const u = allUsers.find(au => au.uid === uid);
+                              return u ? <span key={uid} className="text-[10px] bg-green-50 text-green-700 border border-green-200 rounded-full px-2 py-0.5">{u.firstName||u.email}</span> : null;
+                            })}
+                          </div>
+                        )}
+                        <div className="text-xs text-slate-400">
+                          {bid.updatedAt ? new Date(bid.updatedAt.seconds*1000).toLocaleDateString("th-TH") : "New"}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderProjectInfo = () => (
     <div className="space-y-6 animate-fadeIn">
+      {!isProjectEditable && (
+        <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-sm font-medium">
+          <Shield size={16} className="text-amber-500 shrink-0"/>
+          <span>คุณมีสิทธิ์ <strong>ดูอย่างเดียว</strong> — ไม่สามารถแก้ไขหรือลบข้อมูลในโครงการนี้ได้</span>
+        </div>
+      )}
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-slate-800">
           ข้อมูลโครงการ (Project Information)
@@ -2300,7 +2972,7 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-3 flex items-center justify-center gap-2">
-                    {row.canAddChild && (
+                    {isProjectEditable && row.canAddChild && (
                       <button
                         onClick={() => handleAddDirectSubItem(item.id)}
                         className="p-1.5 text-emerald-600 hover:text-white hover:bg-emerald-600 rounded-full transition-colors"
@@ -2309,6 +2981,7 @@ export default function CostEstimator() {
                         <Plus size={16} />
                       </button>
                     )}
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleEstimateRate(item.id)}
                       className="p-1.5 text-indigo-500 hover:text-white hover:bg-indigo-500 rounded-full transition-colors"
@@ -2316,6 +2989,8 @@ export default function CostEstimator() {
                     >
                       <Wand2 size={16} />
                     </button>
+                    )}
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleRemoveDirectItem(item.id)}
                       className="p-1.5 text-red-400 hover:text-white hover:bg-red-500 rounded-full transition-colors"
@@ -2323,11 +2998,13 @@ export default function CostEstimator() {
                     >
                       <Trash2 size={16} />
                     </button>
+                    )}
                   </td>
                 </tr>
               )})}
             </tbody>
           </table>
+          {isProjectEditable && (
           <div className="p-4 border-t border-slate-100">
             <button
               onClick={handleAddDirectMainItem}
@@ -2336,6 +3013,7 @@ export default function CostEstimator() {
               <Plus size={18} /> เพิ่ม Main Item
             </button>
           </div>
+          )}
         </Card>
         <div className="grid grid-cols-3 gap-4">
           <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
@@ -2383,6 +3061,7 @@ export default function CostEstimator() {
         className="mb-6"
         action={
           <div className="flex items-center gap-2">
+            {isProjectEditable && (
             <button
               onClick={() => setEnabled(!enabled)}
               className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium transition-colors mr-2 ${enabled
@@ -2393,6 +3072,7 @@ export default function CostEstimator() {
               {enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}{" "}
               {enabled ? "ใช้งาน (Active)" : "ไม่ใช้งาน (Inactive)"}
             </button>
+            )}
             <div
               className={`flex items-center gap-2 ${enabled ? "" : "opacity-50 pointer-events-none"
                 }`}
@@ -2403,6 +3083,7 @@ export default function CostEstimator() {
               >
                 <Download size={14} /> Template
               </button>
+              {!isProjectEditable && <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">ดูอย่างเดียว</span>}
               <input
                 type="file"
                 id={inputId}
@@ -2572,17 +3253,20 @@ export default function CostEstimator() {
                     )}
                   </td>
                   <td className="p-2">
+                    {isProjectEditable && (
                     <button
                       onClick={() => handleRemoveRow(setter, item.id)}
-                      className="text-red-400"
+                      className="text-red-400 hover:text-red-600"
                     >
                       <Trash2 size={16} />
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {isProjectEditable && (
           <div className="mt-3">
             <button
               onClick={() => handleAddRow(setter, template)}
@@ -2591,6 +3275,7 @@ export default function CostEstimator() {
               <Plus size={14} /> เพิ่มรายการ
             </button>
           </div>
+          )}
         </div>
       </Card>
     );
@@ -3303,39 +3988,54 @@ export default function CostEstimator() {
     attachment: "5. Attachment file",
   };
 
-  const renderSidebar = () => (
+  const renderSidebar = () => {
+    const sidebarRoles: Role[] = userProfile?.roles || [];
+    return (
     <div className="w-64 bg-slate-900 text-white min-h-screen fixed left-0 top-0 flex flex-col shadow-xl z-10 print:hidden">
-      <div className="p-6 border-b border-slate-800">
+      {/* User profile card at top of sidebar */}
+      <div className="p-4 border-b border-slate-800">
+        <div className="flex items-center gap-3 mb-3">
+          {userProfile?.photoURL
+            ? <img src={userProfile.photoURL} alt="" className="w-10 h-10 rounded-full object-cover border-2 border-slate-600 shrink-0"/>
+            : <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm shrink-0">{(userProfile?.firstName||userProfile?.email||"U")[0].toUpperCase()}</div>
+          }
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-white truncate">{userProfile?.firstName} {userProfile?.lastName}</p>
+            <p className="text-xs text-slate-400 truncate">{userProfile?.email}</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {sidebarRoles.map(r => (
+            <span key={r} className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${ROLE_COLORS[r]||"bg-slate-700 text-slate-300 border-slate-600"}`}>{ROLE_LABELS[r]||r}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-4 border-b border-slate-800">
         <button
           onClick={() => setSelectedBiddingId(null)}
-          className="flex items-center gap-2 text-slate-400 hover:text-white text-sm mb-4 transition-colors"
+          className="flex items-center gap-2 text-slate-400 hover:text-white text-sm mb-3 transition-colors"
         >
           <ArrowLeft size={16} /> Back to Projects
         </button>
         <h1
-          className="text-xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent truncate"
+          className="text-lg font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent truncate"
           title={currentBidding.project.name}
         >
           {currentBidding.project.biddingNo}
         </h1>
-        {/* Conditional Save Status */}
-        <div className="flex items-center gap-2 mt-2">
+        <div className="flex items-center gap-2 mt-1">
           {selectedBiddingId === "DRAFT" ? (
-            <span className="text-xs text-orange-400 flex items-center gap-1 font-bold">
-              Unsaved Draft
-            </span>
+            <span className="text-xs text-orange-400 font-bold">Unsaved Draft</span>
           ) : isSaving ? (
-            <span className="text-xs text-blue-400 flex items-center gap-1">
-              <Loader2 size={10} className="animate-spin" /> Saving...
-            </span>
+            <span className="text-xs text-blue-400 flex items-center gap-1"><Loader2 size={10} className="animate-spin"/> Saving...</span>
           ) : (
-            <span className="text-xs text-slate-500 flex items-center gap-1">
-              <Cloud size={10} /> Saved
-            </span>
+            <span className="text-xs text-slate-500 flex items-center gap-1"><Cloud size={10}/> Saved</span>
           )}
         </div>
       </div>
-      <nav className="flex-1 p-4 space-y-2">
+
+      <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
         {Object.keys(MENU_LABELS).map((key) => (
           <button
             key={key}
@@ -3343,37 +4043,226 @@ export default function CostEstimator() {
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${activeMenu === key
               ? "bg-blue-600 text-white shadow-lg shadow-blue-900/50"
               : "text-slate-400 hover:bg-slate-800 hover:text-white"
-              }`}
+            }`}
           >
             {key === "project" && <Building2 size={20} />}
             {key === "direct" && <HardHat size={20} />}
             {key === "indirect" && <Briefcase size={20} />}
             {key === "report" && <FileText size={20} />}
             {key === "attachment" && <Paperclip size={20} />}
-            <span className="font-medium capitalize">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
+            <span className="font-medium">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
           </button>
         ))}
       </nav>
-      {/* Sidebar Version Label */}
-      <div className="p-4 text-xs text-slate-600 text-center font-mono opacity-50">
-        {APP_VERSION}
+
+      {/* Bottom: User Management (MasterAdmin only) + Logout */}
+      <div className="p-4 border-t border-slate-800 space-y-1">
+        {canManageUsers && (
+          <button
+            onClick={() => setShowUserMgmt(true)}
+            className="w-full flex items-center gap-2 px-3 py-2.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg text-xs font-medium transition-colors relative"
+          >
+            <UserCog size={15} className="text-blue-400"/> จัดการผู้ใช้งาน
+            {pendingCount > 0 && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">{pendingCount}</span>
+            )}
+          </button>
+        )}
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-white hover:bg-red-700/40 rounded-lg text-xs transition-colors"
+        >
+          <LogOut size={14}/> ออกจากระบบ
+        </button>
+        <div className="text-[10px] text-slate-700 text-center font-mono pt-1">{APP_VERSION}</div>
       </div>
     </div>
-  );
+    );
+  };
 
-  // 1. Initial Loading State
-  if (!isDataLoaded) {
+  // 1. Auth loading
+  if (authLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-slate-50">
         <Loader2 className="animate-spin text-blue-600" size={32} />
-        <span className="ml-3 text-slate-600">
-          Loading Public Project Data...
-        </span>
+        <span className="ml-3 text-slate-600">กำลังตรวจสอบสิทธิ์...</span>
       </div>
     );
   }
 
-  // 2. Dashboard View (When no project is selected)
+  // 2. Not logged in — show login/register page
+  if (!user) {
+    if (showRegister) {
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-900 to-blue-950 flex items-center justify-center p-4">
+          <div className="w-full max-w-md">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center p-4 bg-white/10 rounded-full mb-4">
+                <Calculator size={40} className="text-white" />
+              </div>
+              <h1 className="text-3xl font-bold text-white">CMG Cost Estimator</h1>
+              <p className="text-blue-200 mt-2 text-sm">สมัครใช้งานระบบ</p>
+            </div>
+            <form onSubmit={handleRegister} className="bg-white rounded-2xl shadow-2xl p-8 space-y-4">
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><UserPlus size={20} className="text-blue-600"/> สมัครสมาชิก</h2>
+              {regError && <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm">{regError}</div>}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">ชื่อ *</label>
+                  <input value={regFirstName} onChange={e=>setRegFirstName(e.target.value)} required className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="ชื่อ"/>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">นามสกุล *</label>
+                  <input value={regLastName} onChange={e=>setRegLastName(e.target.value)} required className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="นามสกุล"/>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">ตำแหน่ง</label>
+                <input value={regPosition} onChange={e=>setRegPosition(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="ตำแหน่งงาน"/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">แผนก</label>
+                <input value={regDepartment} onChange={e=>setRegDepartment(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="แผนก"/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Email *</label>
+                <input type="email" value={regEmail} onChange={e=>setRegEmail(e.target.value)} required className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="your@email.com"/>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Password * (อย่างน้อย 6 ตัว)</label>
+                <input type="password" value={regPassword} onChange={e=>setRegPassword(e.target.value)} required className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="••••••••"/>
+              </div>
+              <button type="submit" disabled={isRegistering} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
+                {isRegistering ? <><Loader2 size={16} className="animate-spin"/> กำลังสมัคร...</> : <><UserPlus size={16}/> สมัครสมาชิก</>}
+              </button>
+              <p className="text-xs text-center text-slate-500">
+                คนแรกที่สมัครจะได้สิทธิ์ <span className="font-bold text-red-600">MasterAdmin</span> อัตโนมัติ
+              </p>
+              <div className="border-t border-slate-200 pt-3 text-center">
+                <button type="button" onClick={() => setShowRegister(false)} className="text-sm text-blue-600 hover:underline font-medium">← กลับไปหน้าเข้าสู่ระบบ</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 to-blue-950 flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center p-4 bg-white/10 rounded-full mb-4">
+              <Calculator size={40} className="text-white" />
+            </div>
+            <h1 className="text-3xl font-bold text-white">CMG Cost Estimator</h1>
+            <p className="text-blue-200 mt-2 text-sm">ระบบประมาณราคาก่อสร้าง</p>
+          </div>
+          <div className="bg-white rounded-2xl shadow-2xl p-8 space-y-5">
+            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><Lock size={20} className="text-blue-600"/> เข้าสู่ระบบ</h2>
+            {loginError && (
+              <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm">{loginError}</div>
+            )}
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                <input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} required
+                  className="w-full border border-slate-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="your@email.com"/>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+                <input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} required
+                  className="w-full border border-slate-300 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500" placeholder="••••••••"/>
+              </div>
+              <button type="submit" disabled={isLoggingIn}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
+                {isLoggingIn ? <><Loader2 size={16} className="animate-spin"/> กำลังเข้าสู่ระบบ...</> : <><Unlock size={16}/> เข้าสู่ระบบ</>}
+              </button>
+            </form>
+
+            <div className="relative flex items-center justify-center py-1">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"/></div>
+              <span className="relative bg-white px-3 text-xs text-slate-400">หรือ</span>
+            </div>
+
+            {/* Google Sign-In */}
+            <button onClick={handleGoogleLogin} disabled={isLoggingIn}
+              className="w-full flex items-center justify-center gap-3 border border-slate-300 hover:bg-slate-50 py-2.5 rounded-lg text-sm font-medium text-slate-700 transition-colors disabled:opacity-60">
+              <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+              เข้าสู่ระบบด้วย Google
+            </button>
+
+            <div className="border-t border-slate-200 pt-4 text-center">
+              <p className="text-sm text-slate-500">ยังไม่มีบัญชี?</p>
+              <button type="button" onClick={() => setShowRegister(true)} className="text-sm text-blue-600 hover:underline font-bold mt-1">สมัครสมาชิก →</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. User logged in but profile still loading (waiting for onSnapshot)
+  if (user && !userProfile) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <Loader2 className="animate-spin text-blue-600" size={32} />
+        <span className="ml-3 text-slate-600">กำลังโหลดโปรไฟล์...</span>
+      </div>
+    );
+  }
+
+  // 4. Pending approval
+  if (userProfile?.status === "pending") {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-10 max-w-md w-full text-center space-y-4">
+          <div className="inline-flex items-center justify-center p-4 bg-amber-100 rounded-full mb-2">
+            <Shield size={40} className="text-amber-600" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800">รอการอนุมัติ</h1>
+          <p className="text-slate-500 text-sm">บัญชีของคุณกำลังรอ Admin อนุมัติ<br/>กรุณาติดต่อ Admin เพื่อดำเนินการ</p>
+          <div className="bg-slate-50 rounded-lg p-3 text-left text-sm space-y-1">
+            <p><span className="text-slate-400">ชื่อ:</span> <span className="font-medium text-slate-700">{userProfile.firstName} {userProfile.lastName}</span></p>
+            <p><span className="text-slate-400">Email:</span> <span className="font-medium text-slate-700">{userProfile.email}</span></p>
+            <p><span className="text-slate-400">สถานะ:</span> <span className="font-bold text-amber-600">รออนุมัติ</span></p>
+          </div>
+          <button onClick={handleLogout} className="flex items-center gap-2 mx-auto px-5 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-medium transition-colors border border-red-200">
+            <LogOut size={14}/> ออกจากระบบ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 5. Rejected
+  if (userProfile?.status === "rejected") {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-10 max-w-md w-full text-center space-y-4">
+          <div className="inline-flex items-center justify-center p-4 bg-red-100 rounded-full mb-2">
+            <Lock size={40} className="text-red-600" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800">ถูกปฏิเสธ</h1>
+          <p className="text-slate-500 text-sm">บัญชีของคุณถูกปฏิเสธการเข้าใช้งาน<br/>กรุณาติดต่อ Admin</p>
+          <button onClick={handleLogout} className="flex items-center gap-2 mx-auto px-5 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-medium transition-colors border border-red-200">
+            <LogOut size={14}/> ออกจากระบบ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 6. Data loading
+  if (!isDataLoaded) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <Loader2 className="animate-spin text-blue-600" size={32} />
+        <span className="ml-3 text-slate-600">กำลังโหลดข้อมูล...</span>
+      </div>
+    );
+  }
+
+  // 7. Dashboard View (When no project is selected)
   if (!selectedBiddingId) {
     return renderDashboard();
   }
