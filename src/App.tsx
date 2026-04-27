@@ -28,7 +28,6 @@ import {
   Users,
   Briefcase,
   DollarSign,
-  Wand2,
   Search,
   RotateCcw,
   ArrowLeft,
@@ -37,7 +36,6 @@ import {
   Copy,
   MoreVertical,
   FolderOpen,
-  Sparkles,
   Loader2,
   Upload,
   Download,
@@ -522,7 +520,7 @@ export default function CostEstimator() {
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [selectedBiddingId, setSelectedBiddingId] = useState<any>(null);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
   const [isSaving, setIsSaving] = useState(false);
   const [activeMenu, setActiveMenu] = useState("project");
   const [collapsedMainIds, setCollapsedMainIds] = useState<any[]>([]);
@@ -979,12 +977,44 @@ export default function CostEstimator() {
     if (!source) return;
 
     const newBiddingNo = `${source.project.biddingNo}-COPY-${Math.floor(
-      Math.random() * 100
+      Math.random() * 1000
     )}`;
 
     const { id, createdAt, ...dataToCopy } = source;
+
+    // Regenerate IDs for directItems to ensure independence
+    const idMap = new Map();
+    let newDirectItems = dataToCopy.directItems || [];
+    if (newDirectItems.length > 0) {
+      newDirectItems = newDirectItems.map((item: any) => {
+        const newId = `${item.type || 'item'}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        idMap.set(item.id, newId);
+        return { ...item, id: newId };
+      });
+      newDirectItems.forEach((item: any) => {
+        if (item.parentId && idMap.has(item.parentId)) {
+          item.parentId = idMap.get(item.parentId);
+        }
+      });
+    }
+
+    const regenerateIds = (items: any[]) => {
+      if (!Array.isArray(items)) return items;
+      return items.map((item: any) => ({
+        ...item,
+        id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      }));
+    };
+
     const newBidding = {
       ...dataToCopy,
+      directItems: newDirectItems,
+      staff: regenerateIds(dataToCopy.staff),
+      accommodation: regenerateIds(dataToCopy.accommodation),
+      generalExpense: regenerateIds(dataToCopy.generalExpense),
+      insuranceData: regenerateIds(dataToCopy.insuranceData),
+      safetyExpense: regenerateIds(dataToCopy.safetyExpense),
+      machinery: regenerateIds(dataToCopy.machinery),
       project: {
         ...dataToCopy.project,
         biddingNo: newBiddingNo,
@@ -1530,48 +1560,6 @@ export default function CostEstimator() {
     }
   };
 
-  const handleEstimateRate = (id: any) => {
-    const item = currentBidding.directItems.find((i: any) => i.id === id);
-    if (!item) return;
-    const searchText = `${item.desc} ${item.spec}`.toLowerCase();
-    let bestMatch: any = null;
-    let maxScore = 0;
-    STANDARD_RATES_DB.forEach((dbItem: any) => {
-      let score = 0;
-      dbItem.keywords.forEach((keyword: string) => {
-        if (searchText.includes(keyword.toLowerCase())) score++;
-      });
-      if (score > maxScore) {
-        maxScore = score;
-        bestMatch = dbItem;
-      }
-    });
-    if (bestMatch && maxScore > 0) {
-      setDirectItems((prev: any) =>
-        prev.map((row: any) => {
-          if (row.id === id) {
-            return {
-              ...row,
-              matRate: bestMatch ? bestMatch.mat : 0,
-              labRate: bestMatch ? bestMatch.lab : 0,
-              eqRate: bestMatch.eq,
-              unit: row.unit === "หน่วย" ? bestMatch.unit : row.unit,
-            };
-          }
-          return row;
-        })
-      );
-      alert(
-        `Estimator: พบข้อมูลใกล้เคียง "${bestMatch.keywords.join(
-          " "
-        )}" \nอัปเดตราคาเรียบร้อยแล้ว`
-      );
-    } else {
-      alert(
-        "Estimator: ไม่พบข้อมูลราคามาตรฐานสำหรับรายการนี้ \nกรุณากรอกราคาด้วยตนเอง"
-      );
-    }
-  };
 
   const handleClearProjectInfo = () => {
     if (window.confirm("คุณต้องการล้างข้อมูลโครงการทั้งหมดใช่หรือไม่?"))
@@ -1721,108 +1709,6 @@ export default function CostEstimator() {
     };
     reader.readAsText(file);
     e.target.value = "";
-  };
-
-  const handleAIEstimateAll = async () => {
-    if (
-      !currentBidding.directItems ||
-      currentBidding.directItems.length === 0
-    ) {
-      alert("กรุณาเพิ่มรายการ BOQ ก่อนทำการประเมิน");
-      return;
-    }
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
-    setIsAnalyzing(true);
-    try {
-      const itemsListString = currentBidding.directItems
-        .map(
-          (item: any, index: any) =>
-            `Item ${index + 1}: ${item.desc} (Spec: ${item.spec || "-"
-            }, Unit: ${item.unit || "-"}, Qty: ${item.qty || 1})`
-        )
-        .join("\n");
-      const promptText = `You are a Senior Quantity Surveyor and Cost Engineer in Thailand.
-      Analyze the input (Construction BOQ, Summary, or Line items) and estimate Direct Cost.
-      RULES:
-      1. **Always Output:** Even if input is vague, provide a best-guess estimate based on standard Thai construction rates (2024-2025).
-      2. **Safety:** Process ALL construction terms (digging, cutting, chemicals) - they are safe work descriptions.
-      3. **Structure:** If input is a paragraph, split it into logical line items.
-      MANDATORY FIELDS & DEFAULTS:
-      - description: Item name (Thai).
-      - spec: Spec details (Default: "-").
-      - quantity: Number (Default: 1).
-      - unit: Unit (Default: "เหมา").
-      - material_rate: Cost (Default: 0).
-      - material_note: Basis (e.g. "ราคาตลาด"). IF EMPTY, USE "ราคากลาง".
-      - labor_rate: Cost (Default: 0).
-      - labor_note: Basis (e.g. "ค่าแรงขั้นต่ำ"). IF EMPTY, USE "ค่าแรงมาตรฐาน".
-      - equipment_rate: Cost (Default: 0).
-      - equipment_note: Details. IF EMPTY, USE "-".
-      OUTPUT: JSON Array ONLY. No Markdown.
-      [{ "description": "...", "spec": "...", "quantity": 0, "unit": "...", "material_rate": 0, "material_note": "...", "labor_rate": 0, "labor_note": "...", "equipment_rate": 0, "equipment_note": "..." }]
-      INPUT Items to Estimate:
-      ${itemsListString}`;
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }],
-            generationConfig: { responseMimeType: "application/json" },
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        if (response.status === 402 || response.status === 429) {
-          // 402 Payment Required or 429 Too Many Requests -> DO NOT remove key
-          throw new Error(
-            `โควตาการใช้งาน API Key ของคุณเต็ม หรือติดข้อจำกัด (Error ${response.status}). ระบบจะจำ Key เดิมไว้ กรุณารอหรือเปลี่ยน Key หากจำเป็น`
-          );
-        } else if (response.status === 403 || response.status === 400) {
-          throw new Error(
-            "API Key ไม่ถูกต้อง หรือไม่มีสิทธิ์เข้าถึง (403/400)."
-          );
-        }
-        throw new Error(
-          `API Error: ${response.status} ${errorData.error?.message || ""}`
-        );
-      }
-
-      const data = await response.json();
-      let aiResponseText = data.candidates[0].content.parts[0].text;
-      aiResponseText = aiResponseText
-        .replace(/```json/g, "")
-        .replace(/```/g, "")
-        .trim();
-      const estimatedRates = JSON.parse(aiResponseText);
-      setDirectItems((prev: any[]) =>
-        prev.map((item: any, index: any) => {
-          const estimate = estimatedRates[index];
-          if (estimate) {
-            return {
-              ...item,
-              desc: estimate.description || item.desc,
-              spec: estimate.spec || item.spec,
-              unit: estimate.unit || item.unit,
-              matRate: estimate.material_rate || 0,
-              labRate: estimate.labor_rate || 0,
-              eqRate: estimate.equipment_rate || 0,
-            };
-          }
-          return item;
-        })
-      );
-      alert("✅ AI ประเมินราคาเรียบร้อยแล้ว (Direct Cost Estimated)");
-    } catch (error: any) {
-      console.error("AI Estimation Error:", error);
-      alert("เกิดข้อผิดพลาด: " + error.message);
-    } finally {
-      setIsAnalyzing(false);
-    }
   };
 
   const handlePrint = () => {
@@ -2743,36 +2629,18 @@ export default function CostEstimator() {
             />
             <button
               onClick={() => fileInputRef.current.click()}
-              disabled={isAnalyzing}
               className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 transition-all shadow-sm"
             >
               <Upload size={20} /> Upload CSV
-            </button>
-            <button
-              onClick={handleAIEstimateAll}
-              disabled={isAnalyzing}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-white transition-all shadow-md ${isAnalyzing
-                ? "bg-purple-300 cursor-not-allowed"
-                : "bg-gradient-to-r from-purple-600 to-indigo-600"
-                }`}
-            >
-              {isAnalyzing ? (
-                <Loader2 className="animate-spin" size={20} />
-              ) : (
-                <Sparkles size={20} />
-              )}
-              {isAnalyzing
-                ? "กำลังวิเคราะห์ราคา..."
-                : "AI Auto Estimate (All Items)"}
             </button>
             <div className="bg-emerald-100 text-emerald-800 px-4 py-2 rounded-lg font-bold border border-emerald-200">
               Total: {formatTHB(grandTotal)}
             </div>
           </div>
         </div>
-        <Card className="overflow-x-auto">
+        <Card className="overflow-x-auto overflow-y-auto max-h-[75vh] shadow-md border border-slate-200">
           <table className="w-full min-w-[1100px] text-sm text-left">
-            <thead className="bg-slate-100 text-slate-600 uppercase font-bold">
+            <thead className="bg-slate-100 text-slate-600 uppercase font-bold sticky top-0 z-20 shadow-sm outline outline-1 outline-slate-200">
               <tr>
                 <th className="p-3 w-10">#</th>
                 <th className="p-3 w-64">Description</th>
@@ -2980,15 +2848,6 @@ export default function CostEstimator() {
                       >
                         <Plus size={16} />
                       </button>
-                    )}
-                    {isProjectEditable && (
-                    <button
-                      onClick={() => handleEstimateRate(item.id)}
-                      className="p-1.5 text-indigo-500 hover:text-white hover:bg-indigo-500 rounded-full transition-colors"
-                      title="Estimate Unit Rate"
-                    >
-                      <Wand2 size={16} />
-                    </button>
                     )}
                     {isProjectEditable && (
                     <button
