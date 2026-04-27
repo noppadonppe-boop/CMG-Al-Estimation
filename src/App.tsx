@@ -2451,7 +2451,7 @@ export default function CostEstimator() {
             <span className="font-semibold text-slate-700 text-sm">Bidding Document list</span>
             <button
               onClick={() => {
-                const newDoc = { id: Date.now(), description: "", docType: "TOR", files: [] };
+                const newDoc = { id: Date.now(), description: "", docType: "TOR", linkUrl: "", files: [] };
                 setBiddingDocs((prev: any) => [...(prev || []), newDoc]);
               }}
               className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors"
@@ -2466,6 +2466,7 @@ export default function CostEstimator() {
                   <th className="border border-slate-300 p-2 text-center w-14">Item</th>
                   <th className="border border-slate-300 p-2 text-left">Description</th>
                   <th className="border border-slate-300 p-2 text-center w-44">Document Type</th>
+                  <th className="border border-slate-300 p-2 text-left w-64">Link URL</th>
                   <th className="border border-slate-300 p-2 text-left">Upload file</th>
                   <th className="border border-slate-300 p-2 text-center w-10"></th>
                 </tr>
@@ -2473,7 +2474,7 @@ export default function CostEstimator() {
               <tbody>
                 {(currentBidding.biddingDocs || []).length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="border border-slate-300 p-4 text-center text-slate-400 text-xs">
+                    <td colSpan={6} className="border border-slate-300 p-4 text-center text-slate-400 text-xs">
                       ยังไม่มีรายการ กด + Add Item เพื่อเพิ่ม
                     </td>
                   </tr>
@@ -2513,6 +2514,24 @@ export default function CostEstimator() {
                           <option value="Project Over View">Project Over View</option>
                           <option value="other doc.">other doc.</option>
                         </select>
+                      </td>
+                      <td className="border border-slate-300 p-2">
+                        <input
+                          type="text"
+                          value={doc.linkUrl || ""}
+                          onChange={(e) =>
+                            setBiddingDocs((prev: any) =>
+                              prev.map((d: any) => d.id === doc.id ? { ...d, linkUrl: e.target.value } : d)
+                            )
+                          }
+                          className="w-full p-1 border border-slate-200 rounded text-xs outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                          placeholder="ระบุ URL (ถ้ามี)"
+                        />
+                        {doc.linkUrl && (
+                          <a href={doc.linkUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:text-blue-800 underline mt-1 inline-block truncate max-w-[200px]">
+                            เปิดลิงก์
+                          </a>
+                        )}
                       </td>
                       <td className="border border-slate-300 p-2">
                         <div className="flex flex-col gap-1">
@@ -3671,7 +3690,7 @@ export default function CostEstimator() {
           <span className="font-bold text-sm text-slate-900">{title}</span>
           <button
             onClick={() =>
-              handleAddRow(setter, { refItem: "", description: "", files: [] })
+              handleAddRow(setter, { refItem: "", description: "", linkUrl: "", files: [] })
             }
             className="text-sm font-semibold text-slate-800 hover:text-blue-700 transition-colors"
           >
@@ -3683,6 +3702,7 @@ export default function CostEstimator() {
             <tr className="bg-[#fef08a]">
               <th className="p-2 border border-yellow-400 text-left font-bold text-slate-800 w-32">Ref.Item</th>
               <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800">Description</th>
+              <th className="p-2 border border-yellow-400 text-left font-bold text-slate-800 w-64">Link URL</th>
               <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800 w-56">Upload file</th>
               <th className="p-2 border border-yellow-400 text-center font-bold text-slate-800 w-14"></th>
             </tr>
@@ -3691,7 +3711,7 @@ export default function CostEstimator() {
             {(items || []).length === 0 && (
               <tr>
                 <td
-                  colSpan={4}
+                  colSpan={5}
                   className="p-4 text-center text-slate-400 bg-[#fefce8] border border-yellow-200 italic text-sm"
                 >
                   ไม่มีรายการ — กด + Add Item เพื่อเพิ่ม
@@ -3721,6 +3741,22 @@ export default function CostEstimator() {
                     className="w-full bg-transparent border-b border-transparent focus:border-yellow-500 outline-none text-slate-800"
                     placeholder="รายละเอียด..."
                   />
+                </td>
+                <td className="p-2 border border-yellow-300">
+                  <input
+                    type="text"
+                    value={item.linkUrl || ""}
+                    onChange={(e) =>
+                      handleInputChange(setter, item.id, "linkUrl", e.target.value)
+                    }
+                    className="w-full bg-transparent border-b border-transparent focus:border-yellow-500 outline-none text-slate-800"
+                    placeholder="ระบุ URL (ถ้ามี)"
+                  />
+                  {item.linkUrl && (
+                    <a href={item.linkUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-600 hover:text-blue-800 underline mt-1 inline-block truncate max-w-[200px]">
+                      เปิดลิงก์
+                    </a>
+                  )}
                 </td>
                 <td className="p-2 border border-yellow-300">
                   <div className="flex flex-col gap-1">
