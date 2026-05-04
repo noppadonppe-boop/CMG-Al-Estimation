@@ -540,6 +540,7 @@ export default function CostEstimator() {
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [editingCategory, setEditingCategory] = useState<DirectCostCategory | null>(null);
+  const [contractAmountInput, setContractAmountInput] = useState("");
 
   // User management
   const [showUserMgmt, setShowUserMgmt] = useState(false);
@@ -1091,6 +1092,15 @@ export default function CostEstimator() {
     let bidding = selectedBiddingId === "DRAFT" ? draftProject : biddings.find((b) => b.id === selectedBiddingId);
     return migrateDirectCostCategories(bidding);
   }, [biddings, selectedBiddingId, draftProject]);
+
+  useEffect(() => {
+    if (!currentBidding) {
+      setContractAmountInput("");
+      return;
+    }
+    const amount = safeFloat(currentBidding.financials?.contractAmount);
+    setContractAmountInput(amount ? String(amount) : "");
+  }, [currentBidding?.id, currentBidding?.financials?.contractAmount]);
 
   // Set activeCategoryId when categories are available and none is selected
   useEffect(() => {
@@ -3561,19 +3571,17 @@ export default function CostEstimator() {
               <span className="font-semibold text-slate-700 whitespace-nowrap">Contract</span>
               <input
                 type="text"
-                value={
-                  currentBidding.financials.contractAmount
-                    ? safeFloat(currentBidding.financials.contractAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                    : ""
-                }
+                value={contractAmountInput}
                 placeholder={(directCostSummary.grandTotal + timeBasedIndirect.subTotal).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 onFocus={(e) => e.target.select()}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const raw = sanitizeDecimalInput(e.target.value).replace(/,/g, "");
+                  setContractAmountInput(raw);
                   setFinancials({
                     ...currentBidding.financials,
-                    contractAmount: safeFloat(e.target.value.replace(/,/g, "")),
-                  })
-                }
+                    contractAmount: raw === "" ? 0 : safeFloat(raw),
+                  });
+                }}
                 className="w-52 border-2 border-orange-300 bg-orange-50 p-2 rounded text-right font-medium focus:border-orange-500 focus:outline-none"
               />
               <span className="text-slate-500 font-medium">THB</span>
