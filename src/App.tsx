@@ -1184,6 +1184,60 @@ export default function CostEstimator() {
     };
   }, [currentBidding]);
 
+  const directCategoryBreakdown = useMemo(() => {
+    if (!currentBidding) return [];
+
+    const categories = (currentBidding.directCategories || []) as DirectCostCategory[];
+    const fallbackCategoryId = categories[0]?.id || "default_category";
+
+    const summaryMap = new Map<string, {
+      id: string;
+      name: string;
+      matTotal: number;
+      labTotal: number;
+      eqTotal: number;
+      grandTotal: number;
+    }>();
+
+    categories.forEach((category: DirectCostCategory) => {
+      summaryMap.set(category.id, {
+        id: category.id,
+        name: category.name,
+        matTotal: 0,
+        labTotal: 0,
+        eqTotal: 0,
+        grandTotal: 0,
+      });
+    });
+
+    (currentBidding.directItems || []).forEach((item: any) => {
+      const categoryId = item?.categoryId || fallbackCategoryId;
+      if (!summaryMap.has(categoryId)) {
+        summaryMap.set(categoryId, {
+          id: categoryId,
+          name: "หมวดงานอื่น",
+          matTotal: 0,
+          labTotal: 0,
+          eqTotal: 0,
+          grandTotal: 0,
+        });
+      }
+
+      const row = summaryMap.get(categoryId)!;
+      const qty = safeFloat(item?.qty);
+      const mat = qty * safeFloat(item?.matRate);
+      const lab = qty * safeFloat(item?.labRate);
+      const eq = qty * safeFloat(item?.eqRate);
+
+      row.matTotal += mat;
+      row.labTotal += lab;
+      row.eqTotal += eq;
+      row.grandTotal += mat + lab + eq;
+    });
+
+    return Array.from(summaryMap.values());
+  }, [currentBidding]);
+
   const timeBasedIndirect = useMemo(() => {
     if (!currentBidding)
       return {
@@ -3717,48 +3771,51 @@ export default function CostEstimator() {
           </p>
         </div>
       </div>
-      <div className="flex justify-end gap-2 print:hidden">
-        <button
-          onClick={handleExportExcel}
-          className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition-colors"
-        >
-          <FileSpreadsheet size={20} /> Export Excel
-        </button>
-        <button
-          onClick={handlePrint}
-          className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition-colors"
-        >
-          <Printer size={20} /> Print Report
-        </button>
+      <div className="print:hidden rounded-xl border border-slate-200 bg-slate-100/80 px-4 py-3">
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={handleExportExcel}
+            className="flex items-center gap-2 bg-emerald-600 text-white px-3 py-1.5 rounded-md text-sm font-semibold hover:bg-emerald-700 transition-colors shadow-sm"
+          >
+            <FileSpreadsheet size={16} /> Export Excel
+          </button>
+          <button
+            onClick={handlePrint}
+            className="flex items-center gap-2 bg-slate-800 text-white px-3 py-1.5 rounded-md text-sm font-semibold hover:bg-slate-700 transition-colors shadow-sm"
+          >
+            <Printer size={16} /> Print Report
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 print:hidden">
         <Card title="1. Direct Cost Breakdown" className="h-full">
-          <table className="w-full text-sm">
-            <tbody className="divide-y">
-              <tr>
-                <td className="py-3">Material Cost</td>
-                <td className="py-3 text-right font-medium">
-                  {formatTHB(directCostSummary.matTotal)}
-                </td>
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200">
+                <th className="py-2 text-left font-semibold text-slate-700">หมวดงาน</th>
+                <th className="py-2 text-right font-semibold text-slate-700">Material Cost</th>
+                <th className="py-2 text-right font-semibold text-slate-700">Labor Cost</th>
+                <th className="py-2 text-right font-semibold text-slate-700">Equipment Cost</th>
+                <th className="py-2 text-right font-semibold text-slate-700">Total</th>
               </tr>
-              <tr>
-                <td className="py-3">Labor Cost</td>
-                <td className="py-3 text-right font-medium">
-                  {formatTHB(directCostSummary.labTotal)}
-                </td>
-              </tr>
-              <tr>
-                <td className="py-3">Equipment Cost</td>
-                <td className="py-3 text-right font-medium">
-                  {formatTHB(directCostSummary.eqTotal)}
-                </td>
-              </tr>
-              <tr className="bg-slate-50 font-bold text-slate-800">
-                <td className="py-3 pl-2">Total Direct Cost</td>
-                <td className="py-3 text-right pr-2">
-                  {formatTHB(directCostSummary.grandTotal)}
-                </td>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {directCategoryBreakdown.map((category) => (
+                <tr key={category.id}>
+                  <td className="py-2 text-slate-700">{category.name}</td>
+                  <td className="py-2 text-right text-slate-700">{formatTHB(category.matTotal)}</td>
+                  <td className="py-2 text-right text-slate-700">{formatTHB(category.labTotal)}</td>
+                  <td className="py-2 text-right text-slate-700">{formatTHB(category.eqTotal)}</td>
+                  <td className="py-2 text-right font-medium text-slate-800">{formatTHB(category.grandTotal)}</td>
+                </tr>
+              ))}
+              <tr className="bg-[#f3e8e8] font-bold text-slate-900 border-t border-slate-200">
+                <td className="py-3">Total</td>
+                <td className="py-3 text-right">{formatTHB(directCostSummary.matTotal)}</td>
+                <td className="py-3 text-right">{formatTHB(directCostSummary.labTotal)}</td>
+                <td className="py-3 text-right">{formatTHB(directCostSummary.eqTotal)}</td>
+                <td className="py-3 text-right">{formatTHB(directCostSummary.grandTotal)}</td>
               </tr>
             </tbody>
           </table>
