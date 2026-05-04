@@ -745,7 +745,7 @@ export default function CostEstimator() {
               !!existing &&
               loaded.id === activeBiddingId &&
               !!lastLocalEditAt &&
-              Date.now() - lastLocalEditAt < 4000;
+              Date.now() - lastLocalEditAt < 15000;
 
             if (isActiveRecentlyEdited) return existing;
 
@@ -892,7 +892,6 @@ export default function CostEstimator() {
       const { id, ...rawData } = biddingData;
       const dataToSave = cleanDataForFirestore(rawData);
       await updateDoc(docRef, { ...dataToSave, updatedAt: serverTimestamp() });
-      delete localEditTimestampsRef.current[biddingData.id];
     } catch (error) {
       console.error("Save Error:", error);
     } finally {
