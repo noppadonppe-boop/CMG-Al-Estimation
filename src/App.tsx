@@ -36,12 +36,14 @@ import {
   Copy,
   MoreVertical,
   FolderOpen,
+  Folder,
   Loader2,
   Upload,
   Download,
   ToggleLeft,
   ToggleRight,
   Cloud,
+  Edit,
   CloudOff,
   Printer,
   FileSpreadsheet,
@@ -415,6 +417,13 @@ const Card = ({ children, title, icon: Icon, action, className = "" }: any) => (
   </div>
 );
 
+// --- Direct Cost Category Interface ---
+interface DirectCostCategory {
+  id: string;
+  name: string;
+  createdAt?: any;
+}
+
 // --- Role Definitions ---
 const ALL_ROLES = ["MasterAdmin", "BDT", "AssignTo", "View", "Staff", "Viewer", "Creator"] as const;
 type Role = typeof ALL_ROLES[number];
@@ -524,6 +533,13 @@ export default function CostEstimator() {
   const [isSaving, setIsSaving] = useState(false);
   const [activeMenu, setActiveMenu] = useState("project");
   const [collapsedMainIds, setCollapsedMainIds] = useState<any[]>([]);
+  
+  // Direct Cost Categories state
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  const [isDirectCategoriesCollapsed, setIsDirectCategoriesCollapsed] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [editingCategory, setEditingCategory] = useState<DirectCostCategory | null>(null);
 
   // User management
   const [showUserMgmt, setShowUserMgmt] = useState(false);
@@ -1031,10 +1047,57 @@ export default function CostEstimator() {
     await setDoc(docRef, newBidding);
   };
 
+  // Migration function for Direct Cost Categories
+  const migrateDirectCostCategories = (bidding: any) => {
+    if (!bidding) return bidding;
+
+    const existingCategories = Array.isArray(bidding.directCategories)
+      ? bidding.directCategories
+      : [];
+
+    const hasCategories = existingCategories.length > 0;
+
+    // Create default category only if there are no categories at all
+    const defaultCategory = {
+      id: "default_category",
+      name: "ทั่วไป",
+      createdAt: new Date(),
+    };
+
+    const categoriesToUse = hasCategories ? existingCategories : [defaultCategory];
+    const fallbackCategoryId = categoriesToUse[0]?.id || "default_category";
+
+    // Fill only missing categoryId, preserve existing values
+    const updatedItems = (bidding.directItems || []).map((item: any) => ({
+      ...item,
+      categoryId: item?.categoryId || fallbackCategoryId,
+    }));
+
+    const categoriesChanged = !hasCategories;
+    const itemsChanged = (bidding.directItems || []).some((item: any) => !item?.categoryId);
+
+    if (!categoriesChanged && !itemsChanged) {
+      return bidding;
+    }
+
+    return {
+      ...bidding,
+      directCategories: categoriesToUse,
+      directItems: updatedItems,
+    };
+  };
+
   const currentBidding = useMemo(() => {
-    if (selectedBiddingId === "DRAFT") return draftProject;
-    return biddings.find((b) => b.id === selectedBiddingId);
+    let bidding = selectedBiddingId === "DRAFT" ? draftProject : biddings.find((b) => b.id === selectedBiddingId);
+    return migrateDirectCostCategories(bidding);
   }, [biddings, selectedBiddingId, draftProject]);
+
+  // Set activeCategoryId when categories are available and none is selected
+  useEffect(() => {
+    if (currentBidding?.directCategories && currentBidding.directCategories.length > 0 && !activeCategoryId) {
+      setActiveCategoryId(currentBidding.directCategories[0].id);
+    }
+  }, [currentBidding?.directCategories, activeCategoryId]);
 
   // AssignTo => can edit inside their assigned projects but cannot delete the project itself
   // View/Viewer/Staff => read-only inside the editor
@@ -1365,6 +1428,7 @@ export default function CostEstimator() {
         id: `main_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         type: "main",
         parentId: null,
+        categoryId: activeCategoryId || null,
         desc: "Main Item ใหม่...",
         spec: "-",
         unit: "หน่วย",
@@ -1374,6 +1438,86 @@ export default function CostEstimator() {
         eqRate: 0,
       },
     ]);
+  };
+
+  // Category Management Functions
+  const handleAddCategory = () => {
+    if (!newCategoryName.trim()) return;
+    
+    const newCategory: DirectCostCategory = {
+      id: `cat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name: newCategoryName.trim(),
+      createdAt: new Date()
+    };
+    
+    updateCurrentBidding('directCategories', (prev: DirectCostCategory[]) => [
+      ...(prev || []),
+      newCategory
+    ]);
+    
+    setNewCategoryName("");
+    setShowCategoryModal(false);
+    setActiveCategoryId(newCategory.id);
+  };
+
+  const handleEditCategory = () => {
+    if (!editingCategory || !newCategoryName.trim()) return;
+    
+    updateCurrentBidding('directCategories', (prev: DirectCostCategory[]) =>
+      (prev || []).map((cat: DirectCostCategory) =>
+        cat.id === editingCategory.id
+          ? { ...cat, name: newCategoryName.trim() }
+          : cat
+      )
+    );
+    
+    setNewCategoryName("");
+    setEditingCategory(null);
+    setShowCategoryModal(false);
+  };
+
+  const handleDeleteCategory = (categoryId: string) => {
+    if (!confirm('คุณต้องการลบหมวดนี้ใช่หรือไม่? รายการทั้งหมดในหมวดนี้จะถูกย้ายไปยังหมวด "ทั่วไป"')) return;
+    
+    // Find "ทั่วไป" category or create it
+    const defaultCategory = currentBidding?.directCategories?.find((cat: DirectCostCategory) => 
+      cat.name === "ทั่วไป" || cat.id === "default_category"
+    );
+    
+    if (!defaultCategory) {
+      alert('ไม่พบหมวด "ทั่วไป" ไม่สามารถลบหมวดนี้ได้');
+      return;
+    }
+    
+    // Move items to default category and delete the category
+    updateCurrentBidding('directItems', (prev: any[]) =>
+      (prev || []).map((item: any) =>
+        item.categoryId === categoryId
+          ? { ...item, categoryId: defaultCategory.id }
+          : item
+      )
+    );
+    
+    updateCurrentBidding('directCategories', (prev: DirectCostCategory[]) =>
+      (prev || []).filter((cat: DirectCostCategory) => cat.id !== categoryId)
+    );
+    
+    if (activeCategoryId === categoryId) {
+      setActiveCategoryId(defaultCategory.id);
+    }
+  };
+
+  const openCategoryModal = (category?: DirectCostCategory) => {
+    console.log("openCategoryModal called with:", category);
+    if (category) {
+      setEditingCategory(category);
+      setNewCategoryName(category.name);
+    } else {
+      setEditingCategory(null);
+      setNewCategoryName("ใส่ชื่อหมวดงานใหม่");
+    }
+    setShowCategoryModal(true);
+    console.log("showCategoryModal set to true");
   };
 
   const getDirectItemDepth = (items: any[], itemId: any) => {
@@ -2182,6 +2326,7 @@ export default function CostEstimator() {
       <div className="flex-1 ml-64 py-12 px-4 relative">
         {renderProfileModal()}
         {renderUserMgmt()}
+        {renderCategoryModal()}
 
         {/* Top-right: profile avatar + dropdown */}
         <div className="fixed top-4 right-4 z-50">
@@ -2618,14 +2763,118 @@ export default function CostEstimator() {
     </div>
   );
 
+  // Calculate filtered Direct Cost items and summary (moved outside to fix hooks order)
+  const filteredDirectItems = useMemo(() => {
+    return activeCategoryId 
+      ? (currentBidding?.directItems || []).filter((item: any) => item.categoryId === activeCategoryId)
+      : (currentBidding?.directItems || []);
+  }, [currentBidding?.directItems, activeCategoryId]);
+
+  const filteredSummary = useMemo(() => {
+    const calculateSummary = (items: any[]) => {
+      return items.reduce(
+        (acc, item) => {
+          const itemTotal = (item.qty || 0) * ((item.matRate || 0) + (item.labRate || 0) + (item.eqRate || 0));
+          return {
+            matTotal: acc.matTotal + (item.qty || 0) * (item.matRate || 0),
+            labTotal: acc.labTotal + (item.qty || 0) * (item.labRate || 0),
+            eqTotal: acc.eqTotal + (item.qty || 0) * (item.eqRate || 0),
+            grandTotal: acc.grandTotal + itemTotal,
+          };
+        },
+        { matTotal: 0, labTotal: 0, eqTotal: 0, grandTotal: 0 }
+      );
+    };
+    return calculateSummary(filteredDirectItems);
+  }, [filteredDirectItems]);
+
+  const currentCategory = useMemo(() => {
+    return activeCategoryId 
+      ? (currentBidding?.directCategories || []).find((cat: DirectCostCategory) => cat.id === activeCategoryId)
+      : null;
+  }, [currentBidding?.directCategories, activeCategoryId]);
+
+  const filteredVisibleDirectItemRows = useMemo(() => {
+    // Safety check: if no items, return empty array
+    if (!filteredDirectItems || filteredDirectItems.length === 0) {
+      return [];
+    }
+
+    const flatToTree = (items: any[]) => {
+      const itemMap = new Map();
+      const rootItems: any[] = [];
+
+      // Create map and find roots - filter out invalid items
+      items.forEach(item => {
+        if (item && item.id) {
+          itemMap.set(item.id, { ...item, children: [] });
+        }
+      });
+
+      items.forEach(item => {
+        if (!item || !item.id) return; // Skip invalid items
+        
+        const node = itemMap.get(item.id);
+        if (item.parentId && itemMap.has(item.parentId)) {
+          itemMap.get(item.parentId).children.push(node);
+        } else {
+          rootItems.push(node);
+        }
+      });
+
+      return rootItems;
+    };
+
+    const treeToFlat = (nodes: any[], level = 0, parent = null) => {
+      const result: any[] = [];
+      let counter = 1;
+
+      const traverse = (nodeList: any[], currentLevel: number, parentNode: any) => {
+        nodeList.forEach(node => {
+          if (!node || !node.id) return; // Skip invalid nodes
+          
+          const displayNo = currentLevel === 0 
+            ? `${counter++}` 
+            : `${parentNode.displayNo}.${counter++}`;
+
+          result.push({
+            item: node, // Wrap in item object for consistency
+            level: currentLevel,
+            displayNo,
+            hasChildren: node.children && node.children.length > 0,
+            canAddChild: currentLevel < 2, // Allow max 3 levels
+            parent: parentNode
+          });
+
+          if (node.children && node.children.length > 0 && !collapsedMainIds.includes(node.id)) {
+            traverse(node.children, currentLevel + 1, { ...node, displayNo });
+          }
+        });
+      };
+
+      traverse(nodes, 0, null);
+      return result;
+    };
+
+    const tree = flatToTree(filteredDirectItems);
+    return treeToFlat(tree);
+  }, [filteredDirectItems, collapsedMainIds]);
+
   const renderDirectCost = () => {
     const { matTotal, labTotal, eqTotal, grandTotal } = directCostSummary;
     return (
       <div className="space-y-6 animate-fadeIn">
         <div className="flex justify-between items-center">
-          <h2 className="text-2xl font-bold text-slate-800">
-            Direct Cost (ต้นทุนทางตรง)
-          </h2>
+          <div>
+            <h2 className="text-2xl font-bold text-slate-800">
+              Direct Cost (ต้นทุนทางตรง)
+            </h2>
+            {currentCategory && (
+              <p className="text-sm text-slate-600 mt-1">
+                หมวด: <span className="font-semibold text-blue-600">{currentCategory.name}</span>
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-4">
             <button
               onClick={handleExportDirectCostExcel}
@@ -2653,7 +2902,7 @@ export default function CostEstimator() {
               <Upload size={20} /> Upload CSV
             </button>
             <div className="bg-emerald-100 text-emerald-800 px-4 py-2 rounded-lg font-bold border border-emerald-200">
-              Total: {formatTHB(grandTotal)}
+              Total: {formatTHB(filteredSummary.grandTotal)}
             </div>
           </div>
         </div>
@@ -2680,7 +2929,7 @@ export default function CostEstimator() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {visibleDirectItemRows.map((row: any) => {
+              {filteredVisibleDirectItemRows.map((row: any) => {
                 const item = row.item;
                 return (
                 <tr
@@ -2897,19 +3146,19 @@ export default function CostEstimator() {
           <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
             <p className="text-blue-600 text-sm">Material Cost</p>
             <p className="text-xl font-bold text-blue-800">
-              {formatTHB(matTotal)}
+              {formatTHB(filteredSummary.matTotal)}
             </p>
           </div>
           <div className="bg-orange-50 p-4 rounded-lg border border-orange-100">
             <p className="text-orange-600 text-sm">Labor Cost</p>
             <p className="text-xl font-bold text-orange-800">
-              {formatTHB(labTotal)}
+              {formatTHB(filteredSummary.labTotal)}
             </p>
           </div>
           <div className="bg-purple-50 p-4 rounded-lg border border-purple-100">
             <p className="text-purple-600 text-sm">Equipment Cost</p>
             <p className="text-xl font-bold text-purple-800">
-              {formatTHB(eqTotal)}
+              {formatTHB(filteredSummary.eqTotal)}
             </p>
           </div>
         </div>
@@ -3931,23 +4180,82 @@ export default function CostEstimator() {
       </div>
 
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {Object.keys(MENU_LABELS).map((key) => (
-          <button
-            key={key}
-            onClick={() => setActiveMenu(key)}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${activeMenu === key
-              ? "bg-blue-600 text-white shadow-lg shadow-blue-900/50"
-              : "text-slate-400 hover:bg-slate-800 hover:text-white"
-            }`}
-          >
-            {key === "project" && <Building2 size={20} />}
-            {key === "direct" && <HardHat size={20} />}
-            {key === "indirect" && <Briefcase size={20} />}
-            {key === "report" && <FileText size={20} />}
-            {key === "attachment" && <Paperclip size={20} />}
-            <span className="font-medium">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
-          </button>
-        ))}
+        {Object.keys(MENU_LABELS).map((key) => {
+          if (key === "direct") {
+            return (
+              <div key={key} className="space-y-1">
+                <button
+                  onClick={() => {
+                    setActiveMenu(key);
+                    setIsDirectCategoriesCollapsed(!isDirectCategoriesCollapsed);
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${activeMenu === key
+                    ? "bg-blue-600 text-white shadow-lg shadow-blue-900/50"
+                    : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                  }`}
+                >
+                  <HardHat size={20} />
+                  <span className="font-medium">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
+                  {isDirectCategoriesCollapsed ? (
+                    <ChevronRight size={16} className="ml-auto" />
+                  ) : (
+                    <ChevronDown size={16} className="ml-auto" />
+                  )}
+                </button>
+                
+                {!isDirectCategoriesCollapsed && currentBidding?.directCategories && (
+                  <div className="ml-4 space-y-1">
+                    {currentBidding.directCategories.map((category: DirectCostCategory) => (
+                      <button
+                        key={category.id}
+                        onClick={() => {
+                          setActiveCategoryId(category.id);
+                          setActiveMenu(key);
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                          activeCategoryId === category.id
+                            ? "bg-blue-500 text-white"
+                            : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                        }`}
+                      >
+                        <Folder size={16} />
+                        <span className="truncate">{category.name}</span>
+                      </button>
+                    ))}
+                    
+                    {/* Add Category Management Button */}
+                    <button
+                      onClick={() => {
+                        setShowCategoryModal(true);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-green-400 hover:bg-green-900/30 hover:text-green-300 transition-all duration-200"
+                    >
+                      <Plus size={16} />
+                      <span>จัดการหมวดงาน</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          } else {
+            return (
+              <button
+                key={key}
+                onClick={() => setActiveMenu(key)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${activeMenu === key
+                  ? "bg-blue-600 text-white shadow-lg shadow-blue-900/50"
+                  : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                }`}
+              >
+                {key === "project" && <Building2 size={20} />}
+                {key === "indirect" && <Briefcase size={20} />}
+                {key === "report" && <FileText size={20} />}
+                {key === "attachment" && <Paperclip size={20} />}
+                <span className="font-medium">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
+              </button>
+            );
+          }
+        })}
       </nav>
 
       {/* Bottom: User Management (MasterAdmin only) + Logout */}
@@ -3972,6 +4280,99 @@ export default function CostEstimator() {
         <div className="text-[10px] text-slate-700 text-center font-mono pt-1">{APP_VERSION}</div>
       </div>
     </div>
+    );
+  };
+
+  // Category Management Modal
+  const renderCategoryModal = () => {
+    if (!showCategoryModal) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden">
+          <div className="flex items-center justify-between p-5 border-b">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <Folder size={18} />
+              จัดการหมวดงาน
+            </h2>
+            <button 
+              onClick={() => {
+                setShowCategoryModal(false);
+                setEditingCategory(null);
+                setNewCategoryName("");
+              }} 
+              className="text-slate-400 hover:text-slate-700 text-2xl font-bold leading-none"
+            >
+              ×
+            </button>
+          </div>
+          
+          <div className="p-5">
+            <div className="mb-4">
+              <button
+                onClick={() => {
+                  const name = prompt("ชื่อหมวดงานใหม่", "");
+                  if (!name || !name.trim()) return;
+                  const newCategory: DirectCostCategory = {
+                    id: `cat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    name: name.trim(),
+                    createdAt: new Date(),
+                  };
+                  updateCurrentBidding("directCategories", (prev: DirectCostCategory[]) => [
+                    ...(prev || []),
+                    newCategory,
+                  ]);
+                  setActiveCategoryId(newCategory.id);
+                }}
+                className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+              >
+                <Plus size={16} />
+                เพิ่มหมวดงานใหม่
+              </button>
+            </div>
+            
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {currentBidding?.directCategories?.map((category: DirectCostCategory) => (
+                <div key={category.id} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50">
+                  <div className="flex items-center gap-3">
+                    <Folder size={16} className="text-blue-600" />
+                    <span className="font-medium">{category.name}</span>
+                    {activeCategoryId === category.id && (
+                      <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">กำลังใช้งาน</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const newName = prompt("แก้ไขชื่อหมวดงาน", category.name);
+                        if (!newName || !newName.trim()) return;
+                        updateCurrentBidding("directCategories", (prev: DirectCostCategory[]) =>
+                          (prev || []).map((cat: DirectCostCategory) =>
+                            cat.id === category.id ? { ...cat, name: newName.trim() } : cat
+                          )
+                        );
+                      }}
+                      className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="แก้ไข"
+                    >
+                      <Edit size={14} />
+                    </button>
+                    {category.name !== "ทั่วไป" && category.id !== "default_category" && (
+                      <button
+                        onClick={() => handleDeleteCategory(category.id)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="ลบ"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     );
   };
 
@@ -4175,6 +4576,7 @@ export default function CostEstimator() {
   return (
     <div className="flex bg-slate-50 min-h-screen font-sans text-slate-900">
       {renderSidebar()}
+      {renderCategoryModal()}
 
       {/* Printable Report Section (Hidden by default, Visible on print) */}
       <div className="hidden print:block p-8 bg-white text-black font-sans w-full">
