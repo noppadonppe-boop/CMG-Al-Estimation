@@ -558,10 +558,16 @@ export default function CostEstimator() {
 
   const fileInputRef = useRef<any>(null);
   const saveTimeoutRef = useRef<any>(null);
+  const selectedBiddingIdRef = useRef<any>(null);
+  const localEditTimestampsRef = useRef<Record<string, number>>({});
   const attachFileRef = useRef<any>(null);
   const attachTargetRef = useRef<any>({ type: null, id: null });
   const bidDocFileRef = useRef<any>(null);
   const bidDocTargetIdRef = useRef<any>(null);
+
+  useEffect(() => {
+    selectedBiddingIdRef.current = selectedBiddingId;
+  }, [selectedBiddingId]);
 
   // --- Role Helpers (union of all roles) ---
   const roles: Role[] = userProfile?.roles || [];
@@ -571,9 +577,6 @@ export default function CostEstimator() {
   const canAssignUsers   = hasRole("MasterAdmin", "BDT");
   const canManageUsers   = hasRole("MasterAdmin");
   const pendingCount     = allUsers.filter(u => u.status === "pending").length;
-
-  // Debug logging for roles
-  console.log("[Role Check] userProfile.roles:", roles, "canManageUsers:", canManageUsers);
 
   const canEditProject = (bid: any) => {
     if (hasRole("MasterAdmin", "BDT", "Creator")) return true;
@@ -586,26 +589,20 @@ export default function CostEstimator() {
   };
   // --- Auth: listen + load profile realtime ---
   useEffect(() => {
-    console.log("[Auth] Initializing onAuthStateChanged...");
     const unsub = onAuthStateChanged(auth, async (currentUser) => {
-      console.log("[Auth] onAuthStateChanged fired, user:", currentUser?.uid || null);
       setUser(currentUser);
       if (currentUser) {
         // Realtime profile listener
         const profileRef = doc(db, ...USERS_COLLECTION, currentUser.uid);
-        console.log("[Auth] Setting up profile listener for:", currentUser.uid);
         
         // First, check if profile exists - if not, create it
         const profileSnap = await getDoc(profileRef);
-        console.log("[Auth] Initial profile check, exists:", profileSnap.exists());
         
         if (!profileSnap.exists()) {
-          console.log("[Auth] Profile not found, creating...");
           await createUserProfileDoc(currentUser);
         }
         
         const unsubProfile = onSnapshot(profileRef, (snap: any) => {
-          console.log("[Auth] Profile snapshot received, exists:", snap.exists());
           if (snap.exists()) {
             setUserProfile({ uid: snap.id, ...snap.data() });
           } else {
@@ -621,7 +618,6 @@ export default function CostEstimator() {
         setUserProfile(null);
       }
       setAuthLoading(false);
-      console.log("[Auth] Auth loading complete");
     }, (err: any) => {
       console.error("[Auth] onAuthStateChanged error:", err);
       setAuthLoading(false);
@@ -629,7 +625,6 @@ export default function CostEstimator() {
     
     // Timeout fallback - force loading to complete after 5 seconds
     const timeoutId = setTimeout(() => {
-      console.log("[Auth] Timeout reached, forcing loading complete");
       setAuthLoading(false);
     }, 5000);
     
@@ -744,6 +739,16 @@ export default function CostEstimator() {
         setBiddings((prev: any[]) =>
           filtered.map((loaded: any) => {
             const existing = prev.find((b: any) => b.id === loaded.id);
+            const activeBiddingId = selectedBiddingIdRef.current;
+            const lastLocalEditAt = localEditTimestampsRef.current[loaded.id];
+            const isActiveRecentlyEdited =
+              !!existing &&
+              loaded.id === activeBiddingId &&
+              !!lastLocalEditAt &&
+              Date.now() - lastLocalEditAt < 4000;
+
+            if (isActiveRecentlyEdited) return existing;
+
             if (!existing?.directItems || !loaded?.directItems) return loaded;
             return {
               ...loaded,
@@ -887,6 +892,7 @@ export default function CostEstimator() {
       const { id, ...rawData } = biddingData;
       const dataToSave = cleanDataForFirestore(rawData);
       await updateDoc(docRef, { ...dataToSave, updatedAt: serverTimestamp() });
+      delete localEditTimestampsRef.current[biddingData.id];
     } catch (error) {
       console.error("Save Error:", error);
     } finally {
@@ -1127,6 +1133,7 @@ export default function CostEstimator() {
       });
     } else {
       setBiddings((prev: any[]) => {
+        localEditTimestampsRef.current[selectedBiddingId] = Date.now();
         let updatedBiddingForSave = currentBidding;
         const nextBiddings = prev.map((b: any) => {
           if (b.id !== selectedBiddingId) return b;
@@ -1142,7 +1149,7 @@ export default function CostEstimator() {
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = setTimeout(() => {
           saveToFirestore(updatedBiddingForSave);
-        }, 1000);
+        }, 1800);
 
         return nextBiddings;
       });
@@ -1572,7 +1579,6 @@ export default function CostEstimator() {
   };
 
   const openCategoryModal = (category?: DirectCostCategory) => {
-    console.log("openCategoryModal called with:", category);
     if (category) {
       setEditingCategory(category);
       setNewCategoryName(category.name);
@@ -1581,7 +1587,6 @@ export default function CostEstimator() {
       setNewCategoryName("ใส่ชื่อหมวดงานใหม่");
     }
     setShowCategoryModal(true);
-    console.log("showCategoryModal set to true");
   };
 
   const getDirectItemDepth = (items: any[], itemId: any) => {
