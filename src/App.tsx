@@ -313,6 +313,23 @@ const formatTHB = (num: any) => {
   }).format(num || 0);
 };
 
+const formatSafeDateTH = (value: any, fallback = "New") => {
+  if (!value) return fallback;
+
+  let dateValue: Date | null = null;
+
+  if (value instanceof Date) {
+    dateValue = value;
+  } else if (typeof value?.seconds === "number") {
+    dateValue = new Date(value.seconds * 1000);
+  } else if (typeof value === "string" || typeof value === "number") {
+    dateValue = new Date(value);
+  }
+
+  if (!dateValue || Number.isNaN(dateValue.getTime())) return fallback;
+  return dateValue.toLocaleDateString("th-TH");
+};
+
 const safeFloat = (value: any) => {
   if (value === "" || value === null || value === undefined) return 0;
   const normalized = String(value).replace(/,/g, "").replace(/"/g, "").trim();
@@ -1093,9 +1110,85 @@ export default function CostEstimator() {
     };
   };
 
+  const normalizeBiddingShape = (bidding: any) => {
+    if (!bidding) return bidding;
+
+    const asObjectArray = (value: any) =>
+      Array.isArray(value) ? value.filter((v: any) => v && typeof v === "object") : [];
+
+    const normalizedDirectCategories = asObjectArray(bidding.directCategories)
+      .map((category: any, index: number) => ({
+        id: String(category.id || `category_${index + 1}`),
+        name: category.name || `หมวดงาน ${index + 1}`,
+        createdAt: category.createdAt || new Date(),
+      }));
+
+    const normalizedDirectItems = asObjectArray(bidding.directItems);
+
+    const normalizedBondItems = asObjectArray(bidding?.financials?.bondItems).length > 0
+      ? asObjectArray(bidding?.financials?.bondItems)
+      : DEFAULT_BOND_ITEMS.map((b) => ({ ...b }));
+
+    const normalizeFiles = (files: any) =>
+      Array.isArray(files)
+        ? files.filter((f: any) => f && typeof f === "object").map((f: any) => ({
+            name: f.name || "file",
+            url: f.url || "",
+            path: f.path || "",
+          }))
+        : [];
+
+    const normalizeAttachmentItems = (value: any, prefix: string) =>
+      asObjectArray(value).map((item: any, index: number) => ({
+        ...item,
+        id: item.id ?? `${prefix}_${index + 1}`,
+        files: normalizeFiles(item.files),
+      }));
+
+    const normalizedBiddingDocs = asObjectArray(bidding.biddingDocs).map((doc: any, index: number) => ({
+      ...doc,
+      id: doc.id ?? `doc_${index + 1}`,
+      files: normalizeFiles(doc.files),
+    }));
+
+
+
+    return {
+      ...bidding,
+      project: {
+        ...DEFAULT_PROJECT_INFO,
+        ...(bidding.project || {}),
+      },
+      directItems: normalizedDirectItems,
+      directCategories: normalizedDirectCategories.length > 0
+        ? normalizedDirectCategories
+        : [{ id: "default_category", name: "ทั่วไป", createdAt: new Date() }],
+      staff: asObjectArray(bidding.staff),
+      accommodation: asObjectArray(bidding.accommodation),
+      generalExpense: asObjectArray(bidding.generalExpense),
+      insuranceData: asObjectArray(bidding.insuranceData),
+      safetyExpense: asObjectArray(bidding.safetyExpense),
+      machinery: asObjectArray(bidding.machinery),
+      directAttachments: normalizeAttachmentItems(bidding.directAttachments, "direct_attachment"),
+      indirectAttachments: normalizeAttachmentItems(bidding.indirectAttachments, "indirect_attachment"),
+      biddingDocs: normalizedBiddingDocs,
+      staffEnabled: bidding.staffEnabled !== false,
+      accommodationEnabled: bidding.accommodationEnabled !== false,
+      generalExpenseEnabled: bidding.generalExpenseEnabled !== false,
+      insuranceDataEnabled: bidding.insuranceDataEnabled !== false,
+      safetyExpenseEnabled: bidding.safetyExpenseEnabled !== false,
+      machineryEnabled: bidding.machineryEnabled !== false,
+      financials: {
+        ...DEFAULT_FINANCIALS,
+        ...(bidding.financials || {}),
+        bondItems: normalizedBondItems,
+      },
+    };
+  };
+
   const currentBidding = useMemo(() => {
     let bidding = selectedBiddingId === "DRAFT" ? draftProject : biddings.find((b) => b.id === selectedBiddingId);
-    return migrateDirectCostCategories(bidding);
+    return normalizeBiddingShape(migrateDirectCostCategories(bidding));
   }, [biddings, selectedBiddingId, draftProject]);
 
   useEffect(() => {
@@ -1386,6 +1479,7 @@ export default function CostEstimator() {
     const rows: any[] = [];
     const itemById = new Map(items.map((item: any) => [item.id, item]));
     const childrenByParentId = new Map<any, any[]>();
+    const MAX_ROW_DEPTH = 20;
 
     items.forEach((item: any) => {
       const parentId =
@@ -1399,14 +1493,19 @@ export default function CostEstimator() {
       parentId: any,
       prefix: string[] = [],
       level = 0,
-      rootMainId: any = null
+      rootMainId: any = null,
+      ancestry: Set<any> = new Set<any>()
     ) => {
+      if (level > MAX_ROW_DEPTH) return;
+
       const children = childrenByParentId.get(parentId) || [];
       children.forEach((item: any, index: number) => {
         const displayParts = [...prefix, String(index + 1)];
         const normalizedType =
           level === 0 ? "main" : level === 1 ? "sub" : "secondsub";
-        const currentRootMainId = level === 0 ? item.id : rootMainId;
+        const itemId = item?.id ?? `${parentId ?? "root"}_${index}`;
+        const currentRootMainId = level === 0 ? itemId : rootMainId;
+        const isCycle = ancestry.has(itemId);
 
         rows.push({
           item: { ...item, type: normalizedType },
@@ -1414,11 +1513,16 @@ export default function CostEstimator() {
           isMain: level === 0,
           level,
           canAddChild: level < 2,
-          hasChildren: (childrenByParentId.get(item.id) || []).length > 0,
+          hasChildren: !isCycle && (childrenByParentId.get(itemId) || []).length > 0,
           rootMainId: currentRootMainId,
         });
 
-        walk(item.id, displayParts, level + 1, currentRootMainId);
+        if (isCycle) return;
+
+        const nextAncestry = new Set(ancestry);
+        nextAncestry.add(itemId);
+
+        walk(itemId, displayParts, level + 1, currentRootMainId, nextAncestry);
       });
     };
 
@@ -2481,6 +2585,7 @@ export default function CostEstimator() {
                 {biddings.map((bid) => {
                   const canEdit = canEditProject(bid);
                   const canDel = canDeleteProject;
+                  const assignedUsers = Array.isArray(bid?.assignedTo) ? bid.assignedTo : [];
                   return (
                     <div
                       key={bid.id}
@@ -2511,16 +2616,16 @@ export default function CostEstimator() {
                       <div className="space-y-1.5 text-sm text-slate-500 mt-4 border-t pt-4">
                         <div className="flex items-center gap-2"><Users size={13}/> {bid.project?.client || "-"}</div>
                         <div className="flex items-center gap-2"><Calendar size={13}/> {bid.project?.duration || 0} เดือน</div>
-                        {(bid.assignedTo||[]).length > 0 && (
+                        {assignedUsers.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
-                            {(bid.assignedTo as string[]).map((uid:string) => {
+                            {assignedUsers.map((uid: string) => {
                               const u = allUsers.find(au => au.uid === uid);
                               return u ? <span key={uid} className="text-[10px] bg-green-50 text-green-700 border border-green-200 rounded-full px-2 py-0.5">{u.firstName||u.email}</span> : null;
                             })}
                           </div>
                         )}
                         <div className="text-xs text-slate-400">
-                          {bid.updatedAt ? new Date(bid.updatedAt.seconds*1000).toLocaleDateString("th-TH") : "New"}
+                          {formatSafeDateTH(bid.updatedAt, "New")}
                         </div>
                       </div>
                     </div>
@@ -2883,7 +2988,7 @@ export default function CostEstimator() {
         if (!item || !item.id) return; // Skip invalid items
         
         const node = itemMap.get(item.id);
-        if (item.parentId && itemMap.has(item.parentId)) {
+        if (item.parentId && item.parentId !== item.id && itemMap.has(item.parentId)) {
           itemMap.get(item.parentId).children.push(node);
         } else {
           rootItems.push(node);
@@ -2896,10 +3001,20 @@ export default function CostEstimator() {
     const treeToFlat = (nodes: any[], level = 0, parent = null) => {
       const result: any[] = [];
       let counter = 1;
+      const MAX_TREE_DEPTH = 20;
 
-      const traverse = (nodeList: any[], currentLevel: number, parentNode: any) => {
+      const traverse = (
+        nodeList: any[],
+        currentLevel: number,
+        parentNode: any,
+        ancestry: Set<any> = new Set<any>()
+      ) => {
+        if (currentLevel > MAX_TREE_DEPTH) return;
+
         nodeList.forEach(node => {
           if (!node || !node.id) return; // Skip invalid nodes
+          const nodeId = node.id;
+          const isCycle = ancestry.has(nodeId);
           
           const displayNo = currentLevel === 0 
             ? `${counter++}` 
@@ -2909,13 +3024,18 @@ export default function CostEstimator() {
             item: node, // Wrap in item object for consistency
             level: currentLevel,
             displayNo,
-            hasChildren: node.children && node.children.length > 0,
+            hasChildren: !isCycle && node.children && node.children.length > 0,
             canAddChild: currentLevel < 2, // Allow max 3 levels
             parent: parentNode
           });
 
+          if (isCycle) return;
+
+          const nextAncestry = new Set(ancestry);
+          nextAncestry.add(nodeId);
+
           if (node.children && node.children.length > 0 && !collapsedMainIds.includes(node.id)) {
-            traverse(node.children, currentLevel + 1, { ...node, displayNo });
+            traverse(node.children, currentLevel + 1, { ...node, displayNo }, nextAncestry);
           }
         });
       };
