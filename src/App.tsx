@@ -87,6 +87,7 @@ import {
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth, db, storage, googleProvider } from "./firebaseConfig";
+import * as XLSX from "xlsx";
 
 // Shared collection paths
 const APP_NAME = "CMG Al-Estimation";
@@ -97,7 +98,20 @@ const ACTIVITY_COLLECTION = [APP_NAME, "root", "activityLogs"] as const;
 
 // --- Constants & Default Data ---
 
-const APP_VERSION = "v.2.7 (Role System)";
+const APP_VERSION = "v.2.8 (Budget Estimate)";
+
+const BUDGET_SECTIONS = [
+  { id: "prepar01", label: "1.Prepar01" },
+  { id: "siteEx02", label: "2.SiteEx02" },
+  { id: "mat03",    label: "3.Mat03" },
+  { id: "lab04",    label: "4.Lab04" },
+  { id: "eqm05",   label: "5.EQM05" },
+  { id: "sub06",   label: "6.Sub06" },
+  { id: "hof07",   label: "7.HOF07" },
+  { id: "saf08",   label: "8.Saf08" },
+  { id: "suv09",   label: "9.Suv09" },
+] as const;
+type BudgetSectionId = typeof BUDGET_SECTIONS[number]["id"];
 
 const DEFAULT_PROJECT_INFO = {
   biddingNo: "CMG-BID-XX-XXX",
@@ -554,6 +568,8 @@ export default function CostEstimator() {
   // Direct Cost Categories state
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [isDirectCategoriesCollapsed, setIsDirectCategoriesCollapsed] = useState(false);
+  const [isBudgetCollapsed, setIsBudgetCollapsed] = useState(false);
+  const [activeBudgetSection, setActiveBudgetSection] = useState<string>("summary");
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [editingCategory, setEditingCategory] = useState<DirectCostCategory | null>(null);
@@ -581,6 +597,10 @@ export default function CostEstimator() {
   const attachTargetRef = useRef<any>({ type: null, id: null });
   const bidDocFileRef = useRef<any>(null);
   const bidDocTargetIdRef = useRef<any>(null);
+  const budgetFileInputRef = useRef<any>(null);
+  const budgetUploadRef = useRef<any>(null);
+  const budgetAttachTargetRef = useRef<any>({ sectionId: null, id: null });
+  const budgetAttachFileRef = useRef<any>(null);
 
   useEffect(() => {
     selectedBiddingIdRef.current = selectedBiddingId;
@@ -1183,6 +1203,17 @@ export default function CostEstimator() {
         ...(bidding.financials || {}),
         bondItems: normalizedBondItems,
       },
+      budgetEstimate: {
+        prepar01: asObjectArray(bidding.budgetEstimate?.prepar01),
+        siteEx02: asObjectArray(bidding.budgetEstimate?.siteEx02),
+        mat03:    asObjectArray(bidding.budgetEstimate?.mat03),
+        lab04:    asObjectArray(bidding.budgetEstimate?.lab04),
+        eqm05:    asObjectArray(bidding.budgetEstimate?.eqm05),
+        sub06:    asObjectArray(bidding.budgetEstimate?.sub06),
+        hof07:    asObjectArray(bidding.budgetEstimate?.hof07),
+        saf08:    asObjectArray(bidding.budgetEstimate?.saf08),
+        suv09:    asObjectArray(bidding.budgetEstimate?.suv09),
+      },
     };
   };
 
@@ -1272,6 +1303,151 @@ export default function CostEstimator() {
   const setDirectAttachments = (val: any) => updateCurrentBidding("directAttachments", val);
   const setIndirectAttachments = (val: any) => updateCurrentBidding("indirectAttachments", val);
   const setBiddingDocs = (val: any) => updateCurrentBidding("biddingDocs", val);
+
+  const setBudgetSection = (sectionId: BudgetSectionId, val: any) => {
+    updateCurrentBidding("budgetEstimate", (prev: any) => ({
+      ...(prev || {}),
+      [sectionId]: typeof val === "function" ? val((prev || {})[sectionId] || []) : val,
+    }));
+  };
+
+  const handleBudgetAddRow = (sectionId: BudgetSectionId) => {
+    const newRow = { id: Date.now() + Math.floor(Math.random() * 9999), code: "", description: "", budget: 0, note: "", files: [] };
+    setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), newRow]);
+  };
+
+  const handleBudgetRemoveRow = (sectionId: BudgetSectionId, id: any) => {
+    setBudgetSection(sectionId, (prev: any[]) => prev.filter((r: any) => r.id !== id));
+  };
+
+  const handleBudgetInputChange = (sectionId: BudgetSectionId, id: any, field: string, value: any) => {
+    setBudgetSection(sectionId, (prev: any[]) =>
+      prev.map((r: any) => r.id === id ? { ...r, [field]: value } : r)
+    );
+  };
+
+  const handleBudgetTemplate = (sectionId: string) => {
+    const bom = "\uFEFF";
+    const header = "Code,Description,Budget,Note\n";
+    const example = "B-001,รายการตัวอย่าง,100000,หมายเหตุ\n";
+    const blob = new Blob([bom + header + example], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Budget_Template_${sectionId}.csv`;
+    link.click();
+  };
+
+  const handleBudgetExport = (sectionId: string) => {
+    const section = BUDGET_SECTIONS.find(s => s.id === sectionId);
+    const label = section?.label || sectionId;
+    const items: any[] = (currentBidding?.budgetEstimate?.[sectionId as BudgetSectionId] || []);
+    const wsData = [
+      [`Budget Estimate - ${label}`],
+      [`Project: ${currentBidding?.project?.name}`, `Bidding No: ${currentBidding?.project?.biddingNo}`],
+      [],
+      ["Code", "Description", "Budget (฿)", "Note"],
+      ...items.map((r: any) => [r.code || "", r.description || "", r.budget || 0, r.note || ""]),
+      [],
+      ["", "Total", items.reduce((s: number, r: any) => s + (safeFloat(r.budget)), 0), ""],
+    ];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, label);
+    XLSX.writeFile(wb, `Budget_${sectionId}_${currentBidding?.project?.biddingNo || "export"}.xlsx`);
+  };
+
+  const handleBudgetExportSummary = () => {
+    const wsData = [
+      [`Budget Estimate Summary`],
+      [`Project: ${currentBidding?.project?.name}`, `Bidding No: ${currentBidding?.project?.biddingNo}`],
+      [],
+      ["Section", "Items", "Total Budget (฿)"],
+      ...BUDGET_SECTIONS.map(s => {
+        const items: any[] = currentBidding?.budgetEstimate?.[s.id] || [];
+        return [s.label, items.length, items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0)];
+      }),
+      [],
+      ["", "Grand Total", BUDGET_SECTIONS.reduce((total: number, s) => {
+        const items: any[] = currentBidding?.budgetEstimate?.[s.id] || [];
+        return total + items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0);
+      }, 0)],
+    ];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Summary");
+    XLSX.writeFile(wb, `Budget_Summary_${currentBidding?.project?.biddingNo || "export"}.xlsx`);
+  };
+
+  const handleBudgetUpload = (e: any, sectionId: BudgetSectionId) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".csv")) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const text = ev.target?.result as string;
+        if (!text) return;
+        const lines = text.split("\n");
+        const start = lines[0]?.toLowerCase().includes("code") ? 1 : 0;
+        const newRows: any[] = [];
+        for (let i = start; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+          newRows.push({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: parts[0] || "", description: parts[1] || "", budget: safeFloat(parts[2]), note: parts[3] || "", files: [] });
+        }
+        if (newRows.length > 0 && window.confirm(`พบ ${newRows.length} รายการ จะเพิ่มเข้าตาราง?`))
+          setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), ...newRows]);
+      };
+      reader.readAsText(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const data = ev.target?.result;
+        const wb = XLSX.read(data, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        const start = rows.findIndex((r: any[]) => String(r[0] || "").toLowerCase().includes("code"));
+        const dataRows = start >= 0 ? rows.slice(start + 1) : rows;
+        const newRows: any[] = dataRows
+          .filter((r: any[]) => r.length > 0 && r.some(Boolean))
+          .map((r: any[], i: number) => ({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: String(r[0] || ""), description: String(r[1] || ""), budget: safeFloat(r[2]), note: String(r[3] || ""), files: [] }));
+        if (newRows.length > 0 && window.confirm(`พบ ${newRows.length} รายการ จะเพิ่มเข้าตาราง?`))
+          setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), ...newRows]);
+      };
+      reader.readAsBinaryString(file);
+    }
+    e.target.value = "";
+  };
+
+  const handleBudgetAttachFileChange = async (e: any) => {
+    const selected = Array.from(e.target.files || []) as File[];
+    if (selected.length === 0) return;
+    const { sectionId, id } = budgetAttachTargetRef.current;
+    if (!currentBidding || selectedBiddingId === "DRAFT") {
+      alert("กรุณาบันทึกโครงการก่อนอัปโหลดไฟล์");
+      e.target.value = "";
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const uploadedFiles = await Promise.all(selected.map(async (file: File) => {
+        const filePath = `budgetEstimate/${currentBidding.id}/${sectionId}/${id}/${Date.now()}_${file.name}`;
+        const storageRef = ref(storage, filePath);
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        return { name: file.name, url, path: filePath };
+      }));
+      setBudgetSection(sectionId as BudgetSectionId, (prev: any[]) =>
+        prev.map((r: any) => r.id === id ? { ...r, files: [...(r.files || []), ...uploadedFiles] } : r)
+      );
+    } catch (err: any) {
+      alert("เกิดข้อผิดพลาดในการอัปโหลด: " + (err.message || ""));
+    } finally {
+      setIsSaving(false);
+      e.target.value = "";
+    }
+  };
 
   // --- Calculations ---
   const directCostSummary = useMemo(() => {
@@ -4312,6 +4488,266 @@ export default function CostEstimator() {
     );
   };
 
+  // --- Budget Estimate Render ---
+  const renderBudgetEstimate = () => {
+    const sectionInfo = BUDGET_SECTIONS.find(s => s.id === activeBudgetSection);
+    const isSummary = activeBudgetSection === "summary";
+
+    if (isSummary) {
+      const rows = BUDGET_SECTIONS.map(s => {
+        const items: any[] = currentBidding?.budgetEstimate?.[s.id] || [];
+        const total = items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0);
+        return { ...s, itemCount: items.length, total };
+      });
+      const grandTotal = rows.reduce((sum, r) => sum + r.total, 0);
+
+      return (
+        <div className="space-y-6 animate-fadeIn">
+          <div className="flex justify-between items-center">
+            <h2 className="text-2xl font-bold text-slate-800">Budgeting — Summary</h2>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBudgetExportSummary}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-sm text-sm"
+              >
+                <FileSpreadsheet size={16} /> Export Excel
+              </button>
+              <button
+                onClick={() => saveToFirestore(currentBidding)}
+                disabled={isSaving || selectedBiddingId === "DRAFT"}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                  selectedBiddingId === "DRAFT" ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                    : isSaving ? "bg-blue-300 text-white cursor-wait" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md"
+                }`}
+              >
+                {isSaving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : <><Save size={16} /> Save</>}
+              </button>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100 text-slate-600 uppercase font-bold">
+                <tr>
+                  <th className="p-3 text-left">Section</th>
+                  <th className="p-3 text-center">Items</th>
+                  <th className="p-3 text-right">Total Budget (฿)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {rows.map(r => (
+                  <tr key={r.id}
+                    className="hover:bg-slate-50 cursor-pointer transition-colors"
+                    onClick={() => setActiveBudgetSection(r.id)}
+                  >
+                    <td className="p-3 font-medium text-blue-700 hover:underline">{r.label}</td>
+                    <td className="p-3 text-center text-slate-500">{r.itemCount}</td>
+                    <td className="p-3 text-right font-mono">{formatTHB(r.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-emerald-50 font-bold text-emerald-900 border-t-2 border-emerald-200">
+                  <td className="p-3">Grand Total</td>
+                  <td className="p-3 text-center">{rows.reduce((s, r) => s + r.itemCount, 0)}</td>
+                  <td className="p-3 text-right font-mono">{formatTHB(grandTotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
+    const sectionId = activeBudgetSection as BudgetSectionId;
+    const items: any[] = currentBidding?.budgetEstimate?.[sectionId] || [];
+    const sectionTotal = items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0);
+
+    return (
+      <div className="space-y-6 animate-fadeIn">
+        <div className="flex justify-between items-center flex-wrap gap-3">
+          <h2 className="text-2xl font-bold text-slate-800">
+            Budgeting — <span className="text-blue-600">{sectionInfo?.label}</span>
+          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => handleBudgetTemplate(sectionId)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 transition-all shadow-sm text-sm"
+            >
+              <Download size={16} /> Template
+            </button>
+            <input
+              key={`upload-${sectionId}`}
+              type="file"
+              ref={budgetUploadRef}
+              onChange={(e) => handleBudgetUpload(e, sectionId)}
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+            />
+            <button
+              onClick={() => budgetUploadRef.current?.click()}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 transition-all shadow-sm text-sm"
+            >
+              <Upload size={16} /> Upload
+            </button>
+            <button
+              onClick={() => handleBudgetExport(sectionId)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-sm text-sm"
+            >
+              <FileSpreadsheet size={16} /> Export Excel
+            </button>
+            <button
+              onClick={() => handleBudgetAddRow(sectionId)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-blue-600 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all shadow-sm text-sm"
+            >
+              <Plus size={16} /> Add Row
+            </button>
+            <div className="bg-emerald-100 text-emerald-800 px-4 py-2 rounded-lg font-bold border border-emerald-200 text-sm">
+              Total: {formatTHB(sectionTotal)}
+            </div>
+            <button
+              onClick={() => saveToFirestore(currentBidding)}
+              disabled={isSaving || selectedBiddingId === "DRAFT"}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all ${
+                selectedBiddingId === "DRAFT" ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+                  : isSaving ? "bg-blue-300 text-white cursor-wait" : "bg-blue-600 hover:bg-blue-700 text-white shadow-md"
+              }`}
+            >
+              {isSaving ? <><Loader2 size={16} className="animate-spin" /> Saving...</> : <><Save size={16} /> Save</>}
+            </button>
+          </div>
+        </div>
+
+        <input
+          type="file"
+          ref={budgetAttachFileRef}
+          onChange={handleBudgetAttachFileChange}
+          multiple
+          className="hidden"
+        />
+
+        <div className="bg-white rounded-xl shadow border border-slate-200 overflow-x-auto">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead className="bg-slate-100 text-slate-600 uppercase font-bold sticky top-0 z-10">
+              <tr>
+                <th className="p-3 text-left w-12">#</th>
+                <th className="p-3 text-left w-32">Code</th>
+                <th className="p-3 text-left">Description</th>
+                <th className="p-3 text-right w-36">Budget (฿)</th>
+                <th className="p-3 text-left w-48">Note</th>
+                <th className="p-3 text-center w-48">Attachment</th>
+                <th className="p-3 text-center w-12"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="p-6 text-center text-slate-400 italic">
+                    ไม่มีรายการ — กด + Add Row เพื่อเพิ่ม
+                  </td>
+                </tr>
+              )}
+              {items.map((row: any, idx: number) => (
+                <tr key={row.id} className="hover:bg-slate-50 group transition-colors">
+                  <td className="p-3 text-slate-400 text-center">{idx + 1}</td>
+                  <td className="p-3">
+                    <input
+                      type="text"
+                      value={row.code || ""}
+                      onChange={(e) => handleBudgetInputChange(sectionId, row.id, "code", e.target.value)}
+                      className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-slate-800"
+                      placeholder="B-001"
+                    />
+                  </td>
+                  <td className="p-3">
+                    <input
+                      type="text"
+                      value={row.description || ""}
+                      onChange={(e) => handleBudgetInputChange(sectionId, row.id, "description", e.target.value)}
+                      className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-slate-800"
+                      placeholder="รายละเอียด..."
+                    />
+                  </td>
+                  <td className="p-3">
+                    <input
+                      type="number"
+                      value={row.budget || 0}
+                      onChange={(e) => handleBudgetInputChange(sectionId, row.id, "budget", safeFloat(e.target.value))}
+                      className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-right font-mono text-slate-800"
+                      placeholder="0"
+                    />
+                  </td>
+                  <td className="p-3">
+                    <input
+                      type="text"
+                      value={row.note || ""}
+                      onChange={(e) => handleBudgetInputChange(sectionId, row.id, "note", e.target.value)}
+                      className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-slate-600"
+                      placeholder="หมายเหตุ..."
+                    />
+                  </td>
+                  <td className="p-3">
+                    <div className="flex flex-col gap-1">
+                      <button
+                        onClick={() => {
+                          budgetAttachTargetRef.current = { sectionId, id: row.id };
+                          budgetAttachFileRef.current?.click();
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium self-start"
+                      >
+                        <Paperclip size={12} /> แนบไฟล์
+                        {(row.files || []).length > 0 && (
+                          <span className="ml-1 bg-blue-600 text-white rounded-full px-1.5 py-0.5 text-[10px] leading-none">
+                            {row.files.length}
+                          </span>
+                        )}
+                      </button>
+                      {(row.files || []).length > 0 && (
+                        <div className="flex flex-col gap-0.5 mt-1">
+                          {row.files.map((f: any, fi: number) => (
+                            <div key={fi} className="flex items-center gap-1 bg-blue-50 rounded px-1.5 py-0.5">
+                              <a href={f.url} target="_blank" rel="noopener noreferrer"
+                                className="text-[11px] text-blue-600 hover:underline truncate max-w-[140px]" title={f.name}
+                              >
+                                {f.name}
+                              </a>
+                              <button
+                                onClick={() => setBudgetSection(sectionId, (prev: any[]) =>
+                                  prev.map((r: any) => r.id === row.id ? { ...r, files: r.files.filter((_: any, i: number) => i !== fi) } : r)
+                                )}
+                                className="text-red-400 hover:text-red-600 ml-auto shrink-0"
+                              >×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-3 text-center">
+                    <button
+                      onClick={() => handleBudgetRemoveRow(sectionId, row.id)}
+                      className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            {items.length > 0 && (
+              <tfoot>
+                <tr className="bg-emerald-50 font-bold text-emerald-900 border-t-2 border-emerald-200">
+                  <td colSpan={3} className="p-3 text-right">Total</td>
+                  <td className="p-3 text-right font-mono">{formatTHB(sectionTotal)}</td>
+                  <td colSpan={3}></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   // Sidebar Menu Map
   const MENU_LABELS = {
     project: "1. ข้อมูลโครงการ",
@@ -4319,6 +4755,7 @@ export default function CostEstimator() {
     indirect: "3. Indirect Cost",
     report: "4. Total Cost Report",
     attachment: "5. Attachment file",
+    budget: "6. Budgeting",
   };
 
   const renderSidebar = () => {
@@ -4430,7 +4867,10 @@ export default function CostEstimator() {
             return (
               <button
                 key={key}
-                onClick={() => setActiveMenu(key)}
+                onClick={() => {
+                  setActiveMenu(key);
+                  if (key === "budget") setIsBudgetCollapsed(prev => !prev);
+                }}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${activeMenu === key
                   ? "bg-blue-600 text-white shadow-lg shadow-blue-900/50"
                   : "text-slate-400 hover:bg-slate-800 hover:text-white"
@@ -4440,11 +4880,44 @@ export default function CostEstimator() {
                 {key === "indirect" && <Briefcase size={20} />}
                 {key === "report" && <FileText size={20} />}
                 {key === "attachment" && <Paperclip size={20} />}
+                {key === "budget" && <DollarSign size={20} />}
                 <span className="font-medium">{MENU_LABELS[key as keyof typeof MENU_LABELS]}</span>
+                {key === "budget" && (
+                  isBudgetCollapsed
+                    ? <ChevronRight size={16} className="ml-auto" />
+                    : <ChevronDown size={16} className="ml-auto" />
+                )}
               </button>
             );
           }
         })}
+
+        {/* Budget sub-menu rendered outside the map (after attachment key renders) */}
+        {!isBudgetCollapsed && activeMenu === "budget" && (
+          <div className="ml-4 space-y-1">
+            <button
+              onClick={() => setActiveBudgetSection("summary")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                activeBudgetSection === "summary" ? "bg-emerald-600 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+              }`}
+            >
+              <FileText size={14} />
+              <span>Summary</span>
+            </button>
+            {BUDGET_SECTIONS.map(s => (
+              <button
+                key={s.id}
+                onClick={() => setActiveBudgetSection(s.id)}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${
+                  activeBudgetSection === s.id ? "bg-blue-500 text-white" : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                }`}
+              >
+                <Folder size={14} />
+                <span className="truncate">{s.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* Bottom: User Management (MasterAdmin only) + Logout */}
@@ -4965,6 +5438,7 @@ export default function CostEstimator() {
         {activeMenu === "indirect" && renderIndirectCost()}
         {activeMenu === "report" && renderReport()}
         {activeMenu === "attachment" && renderAttachmentFile()}
+        {activeMenu === "budget" && renderBudgetEstimate()}
       </main>
 
       {/* Fixed Bottom Left Version Label v.2.6 */}
