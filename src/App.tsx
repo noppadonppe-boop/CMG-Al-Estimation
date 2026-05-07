@@ -1897,13 +1897,13 @@ export default function CostEstimator() {
       csvHeader = "Item,Qty,Rate\n";
       exampleRow = "รายการ,1,5000\n";
     } else {
-      csvHeader = "Type,Description,Spec,Unit,Qty\n";
+      csvHeader = "Type,Description,Spec,Unit,Qty,MAT.RATE,LAB.RATE,EQ.RATE\n";
       exampleRow =
-        "main,งานโครงสร้าง (Main Item),สเปคหลัก,เหมา,1\n" +
-        "sub,งานขุดดิน (Sub Item),ความลึก 1.5ม.,ลบ.ม.,100\n" +
-        "sub,งานถมดิน (Sub Item),-,ลบ.ม.,80\n" +
-        "main,งานสถาปัตยกรรม (Main Item),-,เหมา,1\n" +
-        "sub,งานก่ออิฐฉาบปูน (Sub Item),-,ตร.ม.,200\n";
+        "main,งานโครงสร้าง (Main Item),สเปคหลัก,เหมา,1,1000,500,200\n" +
+        "sub,งานขุดดิน (Sub Item),ความลึก 1.5ม.,ลบ.ม.,100,50,80,20\n" +
+        "sub,งานถมดิน (Sub Item),-,ลบ.ม.,80,30,60,10\n" +
+        "main,งานสถาปัตยกรรม (Main Item),-,เหมา,1,800,400,100\n" +
+        "sub,งานก่ออิฐฉาบปูน (Sub Item),-,ตร.ม.,200,150,200,50\n";
     }
     const blob = new Blob([bom + csvHeader + exampleRow], {
       type: "text/csv;charset=utf-8;",
@@ -1938,7 +1938,7 @@ export default function CostEstimator() {
         const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
 
         if (hasTypeCol) {
-          // New format: Type,Description,Spec,Unit,Qty
+          // New format: Type,Description,Spec,Unit,Qty,MAT.RATE,LAB.RATE,EQ.RATE
           const itemType = (parts[0] || "main").trim().toLowerCase();
           const isMain = itemType !== "sub";
           const id = Date.now() + i + Math.floor(Math.random() * 9999);
@@ -1951,9 +1951,9 @@ export default function CostEstimator() {
             spec: parts[2] || "-",
             unit: parts[3] || "หน่วย",
             qty: safeFloat(parts[4]),
-            matRate: 0,
-            labRate: 0,
-            eqRate: 0,
+            matRate: safeFloat(parts[5]),
+            labRate: safeFloat(parts[6]),
+            eqRate: safeFloat(parts[7]),
           });
         } else {
           // Old format: Description,Spec,Unit,Qty — all become main items
@@ -3068,26 +3068,26 @@ export default function CostEstimator() {
               onClick={handleExportDirectCostExcel}
               className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-sm text-sm"
             >
-              <FileSpreadsheet size={18} /> Export Excel
+              <FileSpreadsheet size={18} /> CSV and Excel
             </button>
             <button
               onClick={() => handleDownloadTemplate("direct")}
               className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 transition-all shadow-sm text-sm"
             >
-              <Download size={18} /> Template
+              <Download size={18} /> Template CSV
             </button>
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileUpload}
-              accept=".csv"
+              accept=".csv,.xlsx,.xls"
               className="hidden"
             />
             <button
               onClick={() => fileInputRef.current.click()}
               className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 transition-all shadow-sm"
             >
-              <Upload size={20} /> Upload CSV
+              <Upload size={20} /> Upload CSV and Excel
             </button>
             <div className="bg-emerald-100 text-emerald-800 px-4 py-2 rounded-lg font-bold border border-emerald-200">
               Total: {formatTHB(filteredSummary.grandTotal)}
