@@ -101,15 +101,15 @@ const ACTIVITY_COLLECTION = [APP_NAME, "root", "activityLogs"] as const;
 const APP_VERSION = "v.2.8 (Budget Estimate)";
 
 const BUDGET_SECTIONS = [
-  { id: "prepar01", label: "1.Prepar01" },
-  { id: "siteEx02", label: "2.SiteEx02" },
-  { id: "mat03",    label: "3.Mat03" },
-  { id: "lab04",    label: "4.Lab04" },
-  { id: "eqm05",   label: "5.EQM05" },
-  { id: "sub06",   label: "6.Sub06" },
-  { id: "hof07",   label: "7.HOF07" },
-  { id: "saf08",   label: "8.Saf08" },
-  { id: "suv09",   label: "9.Suv09" },
+  { id: "prepar01", label: "1.Prepar01", description: "ค่าจัดเตรียมงาน" },
+  { id: "siteEx02", label: "2.SiteEx02", description: "รายจ่ายประจำ ในหน่วยงาน" },
+  { id: "mat03",    label: "3.Mat03",    description: "ค่าวัสดุ" },
+  { id: "lab04",    label: "4.Lab04",    description: "ค่าแรง" },
+  { id: "eqm05",   label: "5.EQM05",   description: "ค่าเครื่องจักร เครื่องมือ" },
+  { id: "sub06",   label: "6.Sub06",   description: "ค่าจ้างผู้รับเหมาย่อย รายพิเศษ" },
+  { id: "hof07",   label: "7.HOF07",   description: "Head office expenses" },
+  { id: "saf08",   label: "8.Saf08",   description: "ค่าใช้จ่ายเกี่ยวกับความปลอดภัย" },
+  { id: "suv09",   label: "9.Suv09",   description: "งานสำรวจ (Survey work)" },
 ] as const;
 type BudgetSectionId = typeof BUDGET_SECTIONS[number]["id"];
 
@@ -1361,10 +1361,10 @@ export default function CostEstimator() {
       [`Budget Estimate Summary`],
       [`Project: ${currentBidding?.project?.name}`, `Bidding No: ${currentBidding?.project?.biddingNo}`],
       [],
-      ["Section", "Items", "Total Budget (฿)"],
+      ["Section", "Description", "Items", "Total Budget (฿)"],
       ...BUDGET_SECTIONS.map(s => {
         const items: any[] = currentBidding?.budgetEstimate?.[s.id] || [];
-        return [s.label, items.length, items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0)];
+        return [s.label, s.description, items.length, items.reduce((sum: number, r: any) => sum + safeFloat(r.budget), 0)];
       }),
       [],
       ["", "Grand Total", BUDGET_SECTIONS.reduce((total: number, s) => {
@@ -4525,9 +4525,10 @@ export default function CostEstimator() {
           </div>
           <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
             <table className="w-full text-sm">
-              <thead className="bg-slate-100 text-slate-600 uppercase font-bold">
+              <thead className="bg-amber-50 text-amber-800 font-bold border-b border-amber-200">
                 <tr>
                   <th className="p-3 text-left">Section</th>
+                  <th className="p-3 text-left">Description</th>
                   <th className="p-3 text-center">Items</th>
                   <th className="p-3 text-right">Total Budget (฿)</th>
                 </tr>
@@ -4535,18 +4536,20 @@ export default function CostEstimator() {
               <tbody className="divide-y divide-slate-100">
                 {rows.map(r => (
                   <tr key={r.id}
-                    className="hover:bg-slate-50 cursor-pointer transition-colors"
+                    className="hover:bg-amber-50/40 cursor-pointer transition-colors"
                     onClick={() => setActiveBudgetSection(r.id)}
                   >
-                    <td className="p-3 font-medium text-blue-700 hover:underline">{r.label}</td>
+                    <td className="p-3 font-medium text-amber-700 hover:underline whitespace-nowrap">{r.label}</td>
+                    <td className="p-3 text-slate-700">{r.description}</td>
                     <td className="p-3 text-center text-slate-500">{r.itemCount}</td>
-                    <td className="p-3 text-right font-mono">{formatTHB(r.total)}</td>
+                    <td className="p-3 text-right font-mono text-slate-800">{formatTHB(r.total)}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
-                <tr className="bg-emerald-50 font-bold text-emerald-900 border-t-2 border-emerald-200">
+                <tr className="bg-amber-100 font-bold text-amber-900 border-t-2 border-amber-300">
                   <td className="p-3">Grand Total</td>
+                  <td className="p-3"></td>
                   <td className="p-3 text-center">{rows.reduce((s, r) => s + r.itemCount, 0)}</td>
                   <td className="p-3 text-right font-mono">{formatTHB(grandTotal)}</td>
                 </tr>
