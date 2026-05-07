@@ -3176,7 +3176,6 @@ export default function CostEstimator() {
 
     const treeToFlat = (nodes: any[], level = 0, parent = null) => {
       const result: any[] = [];
-      let counter = 1;
       const MAX_TREE_DEPTH = 20;
 
       const traverse = (
@@ -3187,14 +3186,14 @@ export default function CostEstimator() {
       ) => {
         if (currentLevel > MAX_TREE_DEPTH) return;
 
-        nodeList.forEach(node => {
+        nodeList.forEach((node, index) => {
           if (!node || !node.id) return; // Skip invalid nodes
           const nodeId = node.id;
           const isCycle = ancestry.has(nodeId);
           
           const displayNo = currentLevel === 0 
-            ? `${counter++}` 
-            : `${parentNode.displayNo}.${counter++}`;
+            ? `${index + 1}` 
+            : `${parentNode.displayNo}.${index + 1}`;
 
           result.push({
             item: node, // Wrap in item object for consistency
