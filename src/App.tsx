@@ -2094,6 +2094,9 @@ export default function CostEstimator() {
   const handleFileUpload = (e: any) => {
     const file = e.target.files[0];
     if (!file) return;
+    const categories = currentBidding?.directCategories || [];
+    const targetCategoryId =
+      activeCategoryId || categories[0]?.id || "default_category";
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
@@ -2124,6 +2127,7 @@ export default function CostEstimator() {
             id,
             type: isMain ? "main" : "sub",
             parentId: isMain ? null : lastMainId,
+            categoryId: targetCategoryId,
             desc: parts[1] || "",
             spec: parts[2] || "-",
             unit: parts[3] || "หน่วย",
@@ -2139,6 +2143,7 @@ export default function CostEstimator() {
               id: Date.now() + i,
               type: "main",
               parentId: null,
+              categoryId: targetCategoryId,
               desc: parts[0] || "",
               spec: parts[1] || "",
               unit: parts[2] || "หน่วย",
