@@ -88,7 +88,6 @@ import {
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { auth, db, storage, googleProvider } from "./firebaseConfig";
-import * as XLSX from "xlsx";
 
 // Shared collection paths
 const APP_NAME = "CMG Al-Estimation";
@@ -100,6 +99,22 @@ const ACTIVITY_COLLECTION = [APP_NAME, "root", "activityLogs"] as const;
 // --- Constants & Default Data ---
 
 const APP_VERSION = "v.2.8 (Budget Estimate)";
+
+let xlsxModulePromise: Promise<any> | null = null;
+const loadXLSX = async () => {
+  if (!xlsxModulePromise) {
+    xlsxModulePromise = import("xlsx");
+  }
+  return xlsxModulePromise;
+};
+
+let localIdCounter = 0;
+const createClientId = (prefix: string) => {
+  localIdCounter += 1;
+  return `${prefix}_${Date.now()}_${localIdCounter}_${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+};
 
 const BUDGET_SECTIONS = [
   { id: "prepar01", label: "1.Prepar01", description: "ค่าจัดเตรียมงาน" },
@@ -1111,14 +1126,31 @@ export default function CostEstimator() {
     const categoriesToUse = hasCategories ? existingCategories : [defaultCategory];
     const fallbackCategoryId = categoriesToUse[0]?.id || "default_category";
 
-    // Fill only missing categoryId, preserve existing values
-    const updatedItems = (bidding.directItems || []).map((item: any) => ({
+    // Fill missing categoryId and align child category with its parent
+    const sourceItems = Array.isArray(bidding.directItems) ? bidding.directItems : [];
+    const itemById = new Map<any, any>();
+    sourceItems.forEach((item: any) => itemById.set(item?.id, item));
+    const resolvedCategoryById = new Map<any, string>();
+    const resolveCategory = (item: any, trail = new Set<any>()): string => {
+      if (!item) return fallbackCategoryId;
+      const itemId = item.id;
+      if (resolvedCategoryById.has(itemId)) return resolvedCategoryById.get(itemId)!;
+      if (trail.has(itemId)) return fallbackCategoryId;
+      trail.add(itemId);
+      const parent = item?.parentId ? itemById.get(item.parentId) : null;
+      const resolved = parent
+        ? resolveCategory(parent, trail)
+        : (item?.categoryId || fallbackCategoryId);
+      resolvedCategoryById.set(itemId, resolved);
+      return resolved;
+    };
+    const updatedItems = sourceItems.map((item: any) => ({
       ...item,
-      categoryId: item?.categoryId || fallbackCategoryId,
+      categoryId: resolveCategory(item),
     }));
 
     const categoriesChanged = !hasCategories;
-    const itemsChanged = (bidding.directItems || []).some((item: any) => !item?.categoryId);
+    const itemsChanged = sourceItems.some((item: any) => item?.categoryId !== resolveCategory(item));
 
     if (!categoriesChanged && !itemsChanged) {
       return bidding;
@@ -1144,7 +1176,27 @@ export default function CostEstimator() {
         createdAt: category.createdAt || new Date(),
       }));
 
-    const normalizedDirectItems = asObjectArray(bidding.directItems);
+    const normalizedDirectItemsRaw = asObjectArray(bidding.directItems);
+    const usedIds = new Set<string>();
+    const idMap = new Map<any, string>();
+    const normalizedDirectItems = normalizedDirectItemsRaw
+      .map((item: any) => {
+        const originalId = item?.id;
+        let nextId = String(originalId ?? "");
+        if (!nextId || usedIds.has(nextId)) {
+          nextId = createClientId("direct");
+        }
+        usedIds.add(nextId);
+        idMap.set(originalId, nextId);
+        return {
+          ...item,
+          id: nextId,
+        };
+      })
+      .map((item: any) => ({
+        ...item,
+        parentId: item?.parentId != null ? idMap.get(item.parentId) || null : null,
+      }));
 
     const normalizedBondItems = asObjectArray(bidding?.financials?.bondItems).length > 0
       ? asObjectArray(bidding?.financials?.bondItems)
@@ -1238,6 +1290,10 @@ export default function CostEstimator() {
       setActiveCategoryId(currentBidding.directCategories[0].id);
     }
   }, [currentBidding?.directCategories, activeCategoryId]);
+
+  useEffect(() => {
+    setCollapsedMainIds([]);
+  }, [activeCategoryId, selectedBiddingId]);
 
   // AssignTo => can edit inside their assigned projects but cannot delete the project itself
   // View/Viewer/Staff => read-only inside the editor
@@ -1338,7 +1394,8 @@ export default function CostEstimator() {
     link.click();
   };
 
-  const handleBudgetExport = (sectionId: string) => {
+  const handleBudgetExport = async (sectionId: string) => {
+    const XLSX = await loadXLSX();
     const section = BUDGET_SECTIONS.find(s => s.id === sectionId);
     const label = section?.label || sectionId;
     const items: any[] = (currentBidding?.budgetEstimate?.[sectionId as BudgetSectionId] || []);
@@ -1357,7 +1414,8 @@ export default function CostEstimator() {
     XLSX.writeFile(wb, `Budget_${sectionId}_${currentBidding?.project?.biddingNo || "export"}.xlsx`);
   };
 
-  const handleBudgetExportSummary = () => {
+  const handleBudgetExportSummary = async () => {
+    const XLSX = await loadXLSX();
     const wsData = [
       [`Budget Estimate Summary`],
       [`Project: ${currentBidding?.project?.name}`, `Bidding No: ${currentBidding?.project?.biddingNo}`],
@@ -1403,8 +1461,9 @@ export default function CostEstimator() {
       reader.readAsText(file);
     } else {
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = async (ev) => {
         const data = ev.target?.result;
+        const XLSX = await loadXLSX();
         const wb = XLSX.read(data, { type: "binary" });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1 });
@@ -1685,7 +1744,7 @@ export default function CostEstimator() {
         const isCycle = ancestry.has(itemId);
 
         rows.push({
-          item: { ...item, type: normalizedType },
+          item,
           displayNo: displayParts.join("."),
           isMain: level === 0,
           level,
@@ -1707,20 +1766,6 @@ export default function CostEstimator() {
 
     return rows;
   };
-
-  const directItemRows = useMemo(
-    () => buildDirectItemRows(currentBidding?.directItems || []),
-    [currentBidding?.directItems]
-  );
-
-  const visibleDirectItemRows = useMemo(
-    () =>
-      directItemRows.filter(
-        (row: any) =>
-          row.level === 0 || !collapsedMainIds.includes(row.rootMainId)
-      ),
-    [directItemRows, collapsedMainIds]
-  );
 
   // --- Handlers ---
   const handleAddRow = (setter: any, template: any) => {
@@ -1754,8 +1799,13 @@ export default function CostEstimator() {
         input.selectionStart ?? input.value.length
       );
 
-    handleInputChange(setDirectItems, id, inputField, formattedValue);
-    handleInputChange(setDirectItems, id, valueField, numericValue);
+    setDirectItems((prev: any[]) =>
+      (prev || []).map((item: any) =>
+        item.id === id
+          ? { ...item, [inputField]: formattedValue, [valueField]: numericValue }
+          : item
+      )
+    );
 
     requestAnimationFrame(() => {
       if (document.activeElement === input) {
@@ -1776,7 +1826,7 @@ export default function CostEstimator() {
     setDirectItems((prev: any[]) => [
       ...(prev || []),
       {
-        id: `main_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: createClientId("main"),
         type: "main",
         parentId: null,
         categoryId: activeCategoryId || null,
@@ -1910,9 +1960,10 @@ export default function CostEstimator() {
       const newDepth = parentDepth + 1;
 
       const newSub = {
-        id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: createClientId("sub"),
         type: newDepth === 1 ? "sub" : "secondsub",
         parentId,
+        categoryId: parentItem.categoryId || activeCategoryId || null,
         desc: "Sub Item ใหม่...",
         spec: "-",
         unit: "หน่วย",
@@ -2121,7 +2172,7 @@ export default function CostEstimator() {
           // New format: Type,Description,Spec,Unit,Qty,MAT.RATE,LAB.RATE,EQ.RATE
           const itemType = (parts[0] || "main").trim().toLowerCase();
           const isMain = itemType !== "sub";
-          const id = Date.now() + i + Math.floor(Math.random() * 9999);
+          const id = createClientId("direct");
           if (isMain) lastMainId = id;
           newItems.push({
             id,
@@ -2140,7 +2191,7 @@ export default function CostEstimator() {
           // Old format: Description,Spec,Unit,Qty — all become main items
           if (parts.length >= 1)
             newItems.push({
-              id: Date.now() + i,
+              id: createClientId("direct"),
               type: "main",
               parentId: null,
               categoryId: targetCategoryId,
@@ -3149,85 +3200,21 @@ export default function CostEstimator() {
       : null;
   }, [currentBidding?.directCategories, activeCategoryId]);
 
+  const collapsedMainIdSet = useMemo(
+    () => new Set(collapsedMainIds),
+    [collapsedMainIds]
+  );
+
+  const filteredDirectItemRows = useMemo(() => {
+    if (!filteredDirectItems || filteredDirectItems.length === 0) return [];
+    return buildDirectItemRows(filteredDirectItems);
+  }, [filteredDirectItems]);
+
   const filteredVisibleDirectItemRows = useMemo(() => {
-    // Safety check: if no items, return empty array
-    if (!filteredDirectItems || filteredDirectItems.length === 0) {
-      return [];
-    }
-
-    const flatToTree = (items: any[]) => {
-      const itemMap = new Map();
-      const rootItems: any[] = [];
-
-      // Create map and find roots - filter out invalid items
-      items.forEach(item => {
-        if (item && item.id) {
-          itemMap.set(item.id, { ...item, children: [] });
-        }
-      });
-
-      items.forEach(item => {
-        if (!item || !item.id) return; // Skip invalid items
-        
-        const node = itemMap.get(item.id);
-        if (item.parentId && item.parentId !== item.id && itemMap.has(item.parentId)) {
-          itemMap.get(item.parentId).children.push(node);
-        } else {
-          rootItems.push(node);
-        }
-      });
-
-      return rootItems;
-    };
-
-    const treeToFlat = (nodes: any[], level = 0, parent = null) => {
-      const result: any[] = [];
-      const MAX_TREE_DEPTH = 20;
-
-      const traverse = (
-        nodeList: any[],
-        currentLevel: number,
-        parentNode: any,
-        ancestry: Set<any> = new Set<any>()
-      ) => {
-        if (currentLevel > MAX_TREE_DEPTH) return;
-
-        nodeList.forEach((node, index) => {
-          if (!node || !node.id) return; // Skip invalid nodes
-          const nodeId = node.id;
-          const isCycle = ancestry.has(nodeId);
-          
-          const displayNo = currentLevel === 0 
-            ? `${index + 1}` 
-            : `${parentNode.displayNo}.${index + 1}`;
-
-          result.push({
-            item: node, // Wrap in item object for consistency
-            level: currentLevel,
-            displayNo,
-            hasChildren: !isCycle && node.children && node.children.length > 0,
-            canAddChild: currentLevel < 2, // Allow max 3 levels
-            parent: parentNode
-          });
-
-          if (isCycle) return;
-
-          const nextAncestry = new Set(ancestry);
-          nextAncestry.add(nodeId);
-
-          if (node.children && node.children.length > 0 && !collapsedMainIds.includes(node.id)) {
-            traverse(node.children, currentLevel + 1, { ...node, displayNo }, nextAncestry);
-          }
-        });
-      };
-
-      traverse(nodes, 0, null);
-      return result;
-    };
-
-    const tree = flatToTree(filteredDirectItems);
-    return treeToFlat(tree);
-  }, [filteredDirectItems, collapsedMainIds]);
+    return filteredDirectItemRows.filter(
+      (row: any) => row.level === 0 || !collapsedMainIdSet.has(row.rootMainId)
+    );
+  }, [filteredDirectItemRows, collapsedMainIdSet]);
 
   const renderDirectCost = () => {
     const { matTotal, labTotal, eqTotal, grandTotal } = directCostSummary;
@@ -3312,9 +3299,9 @@ export default function CostEstimator() {
                           type="button"
                           onClick={() => toggleMainRowCollapse(item.id)}
                           className="rounded p-0.5 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors"
-                          title={collapsedMainIds.includes(item.id) ? "Expand" : "Collapse"}
+                          title={collapsedMainIdSet.has(item.id) ? "Expand" : "Collapse"}
                         >
-                          {collapsedMainIds.includes(item.id) ? (
+                          {collapsedMainIdSet.has(item.id) ? (
                             <ChevronRight size={14} />
                           ) : (
                             <ChevronDown size={14} />
