@@ -58,6 +58,7 @@ import {
   Eye,
   Lock,
   Unlock,
+  Link,
 } from "lucide-react";
 
 // --- Firebase SDK Imports ---
@@ -1312,7 +1313,7 @@ export default function CostEstimator() {
   };
 
   const handleBudgetAddRow = (sectionId: BudgetSectionId) => {
-    const newRow = { id: Date.now() + Math.floor(Math.random() * 9999), code: "", description: "", budget: 0, note: "", files: [] };
+    const newRow = { id: Date.now() + Math.floor(Math.random() * 9999), code: "", description: "", budget: 0, note: "", url: "", files: [] };
     setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), newRow]);
   };
 
@@ -1328,8 +1329,8 @@ export default function CostEstimator() {
 
   const handleBudgetTemplate = (sectionId: string) => {
     const bom = "\uFEFF";
-    const header = "Code,Description,Budget,Note\n";
-    const example = "B-001,รายการตัวอย่าง,100000,หมายเหตุ\n";
+    const header = "Code,Description,Budget,Note,URL\n";
+    const example = "B-001,รายการตัวอย่าง,100000,หมายเหตุ,https://example.com\n";
     const blob = new Blob([bom + header + example], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -1345,10 +1346,10 @@ export default function CostEstimator() {
       [`Budget Estimate - ${label}`],
       [`Project: ${currentBidding?.project?.name}`, `Bidding No: ${currentBidding?.project?.biddingNo}`],
       [],
-      ["Code", "Description", "Budget (฿)", "Note"],
-      ...items.map((r: any) => [r.code || "", r.description || "", r.budget || 0, r.note || ""]),
+      ["Code", "Description", "Budget (฿)", "Note", "URL"],
+      ...items.map((r: any) => [r.code || "", r.description || "", r.budget || 0, r.note || "", r.url || ""]),
       [],
-      ["", "Total", items.reduce((s: number, r: any) => s + (safeFloat(r.budget)), 0), ""],
+      ["", "Total", items.reduce((s: number, r: any) => s + (safeFloat(r.budget)), 0), "", ""],
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -1394,7 +1395,7 @@ export default function CostEstimator() {
           const line = lines[i].trim();
           if (!line) continue;
           const parts = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-          newRows.push({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: parts[0] || "", description: parts[1] || "", budget: safeFloat(parts[2]), note: parts[3] || "", files: [] });
+          newRows.push({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: parts[0] || "", description: parts[1] || "", budget: safeFloat(parts[2]), note: parts[3] || "", url: parts[4] || "", files: [] });
         }
         if (newRows.length > 0 && window.confirm(`พบ ${newRows.length} รายการ จะเพิ่มเข้าตาราง?`))
           setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), ...newRows]);
@@ -1411,7 +1412,7 @@ export default function CostEstimator() {
         const dataRows = start >= 0 ? rows.slice(start + 1) : rows;
         const newRows: any[] = dataRows
           .filter((r: any[]) => r.length > 0 && r.some(Boolean))
-          .map((r: any[], i: number) => ({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: String(r[0] || ""), description: String(r[1] || ""), budget: safeFloat(r[2]), note: String(r[3] || ""), files: [] }));
+          .map((r: any[], i: number) => ({ id: Date.now() + i + Math.floor(Math.random() * 9999), code: String(r[0] || ""), description: String(r[1] || ""), budget: safeFloat(r[2]), note: String(r[3] || ""), url: String(r[4] || ""), files: [] }));
         if (newRows.length > 0 && window.confirm(`พบ ${newRows.length} รายการ จะเพิ่มเข้าตาราง?`))
           setBudgetSection(sectionId, (prev: any[]) => [...(prev || []), ...newRows]);
       };
@@ -4628,22 +4629,23 @@ export default function CostEstimator() {
         />
 
         <div className="bg-white rounded-xl shadow border border-slate-200 overflow-x-auto">
-          <table className="w-full min-w-[900px] text-sm">
+          <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-slate-100 text-slate-600 uppercase font-bold sticky top-0 z-10">
               <tr>
-                <th className="p-3 text-left w-12">#</th>
-                <th className="p-3 text-left w-32">Code</th>
+                <th className="p-3 text-left w-10">#</th>
+                <th className="p-3 text-left w-28">Code</th>
                 <th className="p-3 text-left">Description</th>
-                <th className="p-3 text-right w-36">Budget (฿)</th>
-                <th className="p-3 text-left w-48">Note</th>
-                <th className="p-3 text-center w-48">Attachment</th>
-                <th className="p-3 text-center w-12"></th>
+                <th className="p-3 text-right w-32">Budget (฿)</th>
+                <th className="p-3 text-left w-36">Note</th>
+                <th className="p-3 text-left w-44">URL Link</th>
+                <th className="p-3 text-center w-44">Attachment</th>
+                <th className="p-3 text-center w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-slate-400 italic">
+                  <td colSpan={8} className="p-6 text-center text-slate-400 italic">
                     ไม่มีรายการ — กด + Add Row เพื่อเพิ่ม
                   </td>
                 </tr>
@@ -4686,6 +4688,26 @@ export default function CostEstimator() {
                       className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-slate-600"
                       placeholder="หมายเหตุ..."
                     />
+                  </td>
+                  <td className="p-3">
+                    <div className="flex items-center gap-1">
+                      <Link size={12} className="text-slate-400 shrink-0" />
+                      <input
+                        type="url"
+                        value={row.url || ""}
+                        onChange={(e) => handleBudgetInputChange(sectionId, row.id, "url", e.target.value)}
+                        className="w-full bg-transparent border-b border-transparent focus:border-blue-400 outline-none text-blue-600 text-xs"
+                        placeholder="https://..."
+                      />
+                      {row.url && (
+                        <a href={row.url} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-500 hover:text-blue-700 shrink-0"
+                          title="เปิดลิ้งก์"
+                        >
+                          <Link size={12} />
+                        </a>
+                      )}
+                    </div>
                   </td>
                   <td className="p-3">
                     <div className="flex flex-col gap-1">
@@ -4740,7 +4762,7 @@ export default function CostEstimator() {
                 <tr className="bg-emerald-50 font-bold text-emerald-900 border-t-2 border-emerald-200">
                   <td colSpan={3} className="p-3 text-right">Total</td>
                   <td className="p-3 text-right font-mono">{formatTHB(sectionTotal)}</td>
-                  <td colSpan={3}></td>
+                  <td colSpan={4}></td>
                 </tr>
               </tfoot>
             )}
