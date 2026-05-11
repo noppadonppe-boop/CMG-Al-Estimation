@@ -2129,9 +2129,13 @@ export default function CostEstimator() {
       exampleRow =
         "main,งานโครงสร้าง (Main Item),สเปคหลัก,เหมา,1,1000,500,200\n" +
         "sub,งานขุดดิน (Sub Item),ความลึก 1.5ม.,ลบ.ม.,100,50,80,20\n" +
+        "secondsub,งานขุดดินชั้นที่ 1 (Second Sub Item),ความลึก 0-1ม.,ลบ.ม.,50,40,60,15\n" +
+        "secondsub,งานขุดดินชั้นที่ 2 (Second Sub Item),ความลึก 1-1.5ม.,ลบ.ม.,50,60,100,25\n" +
         "sub,งานถมดิน (Sub Item),-,ลบ.ม.,80,30,60,10\n" +
         "main,งานสถาปัตยกรรม (Main Item),-,เหมา,1,800,400,100\n" +
-        "sub,งานก่ออิฐฉาบปูน (Sub Item),-,ตร.ม.,200,150,200,50\n";
+        "sub,งานก่ออิฐฉาบปูน (Sub Item),-,ตร.ม.,200,150,200,50\n" +
+        "secondsub,งานก่ออิฐชั้นที่ 1 (Second Sub Item),-,ตร.ม.,100,140,180,40\n" +
+        "secondsub,งานฉาบปูน (Second Sub Item),-,ตร.ม.,100,160,220,60\n";
     }
     const blob = new Blob([bom + csvHeader + exampleRow], {
       type: "text/csv;charset=utf-8;",
@@ -2160,8 +2164,9 @@ export default function CostEstimator() {
       const hasTypeCol = headerLine.startsWith("type");
       const startIndex = headerLine.includes("description") || headerLine.startsWith("type") ? 1 : 0;
 
-      // Track last main item id for sub-item linking
+      // Track last main and sub item ids for hierarchical linking
       let lastMainId: any = null;
+      let lastSubId: any = null;
 
       for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -2171,13 +2176,35 @@ export default function CostEstimator() {
         if (hasTypeCol) {
           // New format: Type,Description,Spec,Unit,Qty,MAT.RATE,LAB.RATE,EQ.RATE
           const itemType = (parts[0] || "main").trim().toLowerCase();
-          const isMain = itemType !== "sub";
           const id = createClientId("direct");
-          if (isMain) lastMainId = id;
+          
+          let type: string;
+          let parentId: any = null;
+          
+          if (itemType === "main") {
+            type = "main";
+            parentId = null;
+            lastMainId = id;
+            lastSubId = null; // Reset sub when new main starts
+          } else if (itemType === "sub") {
+            type = "sub";
+            parentId = lastMainId;
+            lastSubId = id;
+          } else if (itemType === "secondsub") {
+            type = "secondsub";
+            parentId = lastSubId; // Second sub belongs to last sub
+          } else {
+            // Default to main if unknown type
+            type = "main";
+            parentId = null;
+            lastMainId = id;
+            lastSubId = null;
+          }
+          
           newItems.push({
             id,
-            type: isMain ? "main" : "sub",
-            parentId: isMain ? null : lastMainId,
+            type,
+            parentId,
             categoryId: targetCategoryId,
             desc: parts[1] || "",
             spec: parts[2] || "-",
@@ -2207,7 +2234,7 @@ export default function CostEstimator() {
       }
       if (
         newItems.length > 0 &&
-        window.confirm(`Found ${newItems.length} items (${newItems.filter((x:any)=>x.type==="main").length} main, ${newItems.filter((x:any)=>x.type==="sub").length} sub). Append?`)
+        window.confirm(`Found ${newItems.length} items (${newItems.filter((x:any)=>x.type==="main").length} main, ${newItems.filter((x:any)=>x.type==="sub").length} sub, ${newItems.filter((x:any)=>x.type==="secondsub").length} secondsub). Append?`)
       )
         setDirectItems((prev: any[]) => [...(prev || []), ...newItems]);
     };
