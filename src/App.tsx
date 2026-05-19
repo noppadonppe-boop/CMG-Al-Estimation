@@ -368,6 +368,15 @@ const safeFloat = (value: any) => {
   return isNaN(num) ? 0 : num;
 };
 
+const sanitizeFilenamePart = (value: any, fallback = "export") => {
+  const sanitized = String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/\s+/g, "_");
+
+  return sanitized || fallback;
+};
+
 const roundToTwoDecimals = (value: any) =>
   Math.round((safeFloat(value) + Number.EPSILON) * 100) / 100;
 
@@ -2389,98 +2398,270 @@ export default function CostEstimator() {
     document.body.removeChild(link);
   };
 
-  const handleExportDirectCostExcel = () => {
-    const rows = buildDirectItemRows(currentBidding.directItems || []);
+  const handleExportDirectCostExcel = async () => {
+    if (!currentBidding) return;
 
-    // Pre-compute sub-item totals per main item
-    const mainTotals = new Map<any, number>();
-    rows.forEach((row: any) => {
-      if (!row.isMain) {
-        const parentId = row.item.parentId;
-        const cost = (row.item.qty || 0) * ((row.item.matRate || 0) + (row.item.labRate || 0) + (row.item.eqRate || 0));
-        mainTotals.set(parentId, (mainTotals.get(parentId) || 0) + cost);
-      }
+    const rows = buildDirectItemRows(filteredDirectItems);
+    if (rows.length === 0) {
+      alert("ไม่มีรายการ Direct Cost ในหมวดงานที่เลือก");
+      return;
+    }
+
+    const XLSX = await loadXLSX();
+    const categoryLabel = currentCategory?.name || "ทุกหมวดงาน";
+    const safeCategoryLabel = sanitizeFilenamePart(
+      categoryLabel,
+      "all_categories"
+    );
+    const safeBiddingNo = sanitizeFilenamePart(
+      currentBidding.project?.biddingNo,
+      "export"
+    );
+    const sourceItemTotals = filteredDirectItems.map((item: any, index: number) => {
+      const qty = safeFloat(item.qty);
+      const matRate = safeFloat(item.matRate);
+      const labRate = safeFloat(item.labRate);
+      const eqRate = safeFloat(item.eqRate);
+      const rowTotal = roundToTwoDecimals(qty * (matRate + labRate + eqRate));
+
+      return {
+        index: index + 1,
+        item,
+        qty,
+        matRate,
+        labRate,
+        eqRate,
+        rowTotal,
+      };
     });
 
-    const rowsHtml = rows.map((row: any) => {
+    const exportRows = rows.map((row: any) => {
       const item = row.item;
-      const cost = (item.qty || 0) * ((item.matRate || 0) + (item.labRate || 0) + (item.eqRate || 0));
-      const subTotal = row.isMain && mainTotals.has(item.id) ? (mainTotals.get(item.id) ?? 0) : null;
-      const displayCost = row.isMain && subTotal !== null ? subTotal : cost;
+      const ownTotal =
+        safeFloat(item.qty) *
+        (safeFloat(item.matRate) +
+          safeFloat(item.labRate) +
+          safeFloat(item.eqRate));
 
-      if (row.isMain) {
-        return `
-        <tr style="background-color:#f1f5f9; font-weight:bold;">
-          <td style="background-color:#e2e8f0;">${row.displayNo}</td>
-          <td>${item.desc}</td>
-          <td>${item.spec || '-'}</td>
-          <td style="text-align:center">${item.unit}</td>
-          <td style="text-align:right">${item.qty}</td>
-          <td style="text-align:right">${item.matRate || ''}</td>
-          <td style="text-align:right">${item.labRate || ''}</td>
-          <td style="text-align:right">${item.eqRate || ''}</td>
-          <td style="text-align:right; font-weight:bold">${displayCost.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-        </tr>`;
-      } else {
-        return `
-        <tr>
-          <td style="padding-left:20px; color:#64748b;">${row.displayNo}</td>
-          <td style="padding-left:20px;">${item.desc}</td>
-          <td>${item.spec || '-'}</td>
-          <td style="text-align:center">${item.unit}</td>
-          <td style="text-align:right">${item.qty}</td>
-          <td style="text-align:right; color:#1d4ed8">${item.matRate || ''}</td>
-          <td style="text-align:right; color:#c2410c">${item.labRate || ''}</td>
-          <td style="text-align:right; color:#7c3aed">${item.eqRate || ''}</td>
-          <td style="text-align:right">${cost.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-        </tr>`;
-      }
-    }).join("");
+      return [
+        row.displayNo,
+        row.isMain ? "main" : row.level === 1 ? "sub" : "secondsub",
+        item.desc || "",
+        item.spec || "-",
+        item.unit || "",
+        safeFloat(item.qty),
+        safeFloat(item.matRate),
+        safeFloat(item.labRate),
+        safeFloat(item.eqRate),
+        roundToTwoDecimals(ownTotal),
+      ];
+    });
+    const exportedItemIds = new Set(rows.map((row: any) => row.item?.id));
+    const missingSourceRows = sourceItemTotals.filter(
+      (sourceRow: any) => !exportedItemIds.has(sourceRow.item?.id)
+    );
+    const exportedRowsTotal = roundToTwoDecimals(
+      exportRows.reduce((sum: number, row: any[]) => sum + safeFloat(row[9]), 0)
+    );
 
-    let table = `
-    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-    <head>
-    <meta http-equiv="content-type" content="application/vnd.ms-excel; charset=UTF-8">
-    <style>
-      .header { font-weight: bold; font-size: 14pt; }
-      .table-header { font-weight: bold; background-color: #334155; color: white; text-align: center; }
-      td { border: 1px solid #cbd5e1; padding: 5px; font-size: 11pt; }
-    </style>
-    </head>
-    <body>
-    <table>
-      <tr><td colspan="9" class="header">Direct Cost Breakdown: ${currentBidding.project.name}</td></tr>
-      <tr><td colspan="9">Bidding No: ${currentBidding.project.biddingNo} &nbsp;&nbsp; Client: ${currentBidding.project.client}</td></tr>
-      <tr><td></td></tr>
-      <tr class="table-header">
-        <td>#</td>
-        <td>Description</td>
-        <td>Spec</td>
-        <td>Unit</td>
-        <td>Qty</td>
-        <td>Mat Rate</td>
-        <td>Lab Rate</td>
-        <td>Eq Rate</td>
-        <td>Total Cost (฿)</td>
-      </tr>
-      ${rowsHtml}
-      <tr><td></td></tr>
-      <tr style="font-weight: bold; background-color:#dcfce7;">
-        <td colspan="8" style="text-align: right;">Grand Total Direct Cost (฿)</td>
-        <td style="text-align:right">${directCostSummary.grandTotal.toLocaleString('th-TH', {minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-      </tr>
-    </table>
-    </body>
-    </html>`;
+    const debugRows = rows.map((row: any, index: number) => {
+      const item = row.item || {};
+      const qty = safeFloat(item.qty);
+      const matRate = safeFloat(item.matRate);
+      const labRate = safeFloat(item.labRate);
+      const eqRate = safeFloat(item.eqRate);
+      const rowTotal = roundToTwoDecimals(
+        qty * (matRate + labRate + eqRate)
+      );
 
-    const blob = new Blob([table], { type: "application/vnd.ms-excel" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.href = url;
-    link.download = `Direct_Cost_${currentBidding.project.biddingNo}.xls`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      return [
+        index + 1,
+        item.id ?? "",
+        item.parentId ?? "",
+        row.displayNo,
+        row.isMain ? "main" : row.level === 1 ? "sub" : "secondsub",
+        categoryLabel,
+        item.desc || "",
+        item.spec || "-",
+        item.unit || "",
+        qty,
+        matRate,
+        labRate,
+        eqRate,
+        rowTotal,
+      ];
+    });
+
+    const grandTotal = roundToTwoDecimals(filteredSummary.grandTotal);
+    const missingRowsTotal = roundToTwoDecimals(
+      missingSourceRows.reduce(
+        (sum: number, sourceRow: any) => sum + sourceRow.rowTotal,
+        0
+      )
+    );
+    const rawSourceTotal = roundToTwoDecimals(
+      sourceItemTotals.reduce(
+        (sum: number, sourceRow: any) => sum + sourceRow.rowTotal,
+        0
+      )
+    );
+    const totalDifference = roundToTwoDecimals(grandTotal - exportedRowsTotal);
+    const rawSourceDifference = roundToTwoDecimals(
+      rawSourceTotal - exportedRowsTotal
+    );
+    const workbookRows = [
+      ["Direct Cost Breakdown", currentBidding.project?.name || ""],
+      ["Bidding No", currentBidding.project?.biddingNo || ""],
+      ["Client", currentBidding.project?.client || ""],
+      ["Category", categoryLabel],
+      [],
+      [
+        "#",
+        "Type",
+        "Description",
+        "Spec",
+        "Unit",
+        "Qty",
+        "Mat Rate",
+        "Lab Rate",
+        "Eq Rate",
+        "Total Cost (THB)",
+      ],
+      ...exportRows,
+      [],
+      ["", "", "", "", "", "", "", "", "Grand Total Direct Cost (THB)", grandTotal],
+    ];
+
+    const debugWorkbookRows = [
+      ["Direct Cost Debug Export", currentBidding.project?.name || ""],
+      ["Bidding No", currentBidding.project?.biddingNo || ""],
+      ["Client", currentBidding.project?.client || ""],
+      ["Category", categoryLabel],
+      ["Expected Grand Total (THB)", grandTotal],
+      [],
+      [
+        "Row",
+        "Item ID",
+        "Parent ID",
+        "Display No",
+        "Type",
+        "Category",
+        "Description",
+        "Spec",
+        "Unit",
+        "Qty",
+        "Mat Rate",
+        "Lab Rate",
+        "Eq Rate",
+        "Row Total (THB)",
+      ],
+      ...debugRows,
+      [],
+      ["", "", "", "", "", "", "", "", "", "", "", "", "Grand Total Direct Cost (THB)", grandTotal],
+    ];
+    const auditWorkbookRows = [
+      ["Direct Cost Export Audit", currentBidding.project?.name || ""],
+      ["Bidding No", currentBidding.project?.biddingNo || ""],
+      ["Category", categoryLabel],
+      ["Source Items Count", filteredDirectItems.length],
+      ["Exported Rows Count", rows.length],
+      ["Raw Source Items SUM (THB)", rawSourceTotal],
+      ["Exported Rows SUM (THB)", exportedRowsTotal],
+      ["Grand Total Direct Cost (THB)", grandTotal],
+      ["Difference Grand Total - Export SUM (THB)", totalDifference],
+      ["Difference Raw Source - Export SUM (THB)", rawSourceDifference],
+      ["Missing Rows Count", missingSourceRows.length],
+      ["Missing Rows Total (THB)", missingRowsTotal],
+      [],
+      [
+        "Source Row",
+        "Item ID",
+        "Parent ID",
+        "Description",
+        "Spec",
+        "Unit",
+        "Qty",
+        "Mat Rate",
+        "Lab Rate",
+        "Eq Rate",
+        "Row Total (THB)",
+      ],
+      ...missingSourceRows.map((sourceRow: any) => {
+        const item = sourceRow.item || {};
+        return [
+          sourceRow.index,
+          item.id ?? "",
+          item.parentId ?? "",
+          item.desc || "",
+          item.spec || "-",
+          item.unit || "",
+          sourceRow.qty,
+          sourceRow.matRate,
+          sourceRow.labRate,
+          sourceRow.eqRate,
+          sourceRow.rowTotal,
+        ];
+      }),
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet(workbookRows);
+    worksheet["!cols"] = [
+      { wch: 8 },
+      { wch: 12 },
+      { wch: 40 },
+      { wch: 30 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 18 },
+    ];
+
+    const debugWorksheet = XLSX.utils.aoa_to_sheet(debugWorkbookRows);
+    debugWorksheet["!cols"] = [
+      { wch: 8 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 20 },
+      { wch: 40 },
+      { wch: 30 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 18 },
+    ];
+    const auditWorksheet = XLSX.utils.aoa_to_sheet(auditWorkbookRows);
+    auditWorksheet["!cols"] = [
+      { wch: 14 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 40 },
+      { wch: 30 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 18 },
+    ];
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      sanitizeFilenamePart(categoryLabel, "Direct_Cost").slice(0, 31)
+    );
+    XLSX.utils.book_append_sheet(workbook, debugWorksheet, "DEBUG_ROWS");
+    XLSX.utils.book_append_sheet(workbook, auditWorksheet, "AUDIT_MISSING");
+    XLSX.writeFile(
+      workbook,
+      `Direct_Cost_${safeBiddingNo}_${safeCategoryLabel}.xlsx`
+    );
   };
 
   // --- Profile Edit Modal ---
@@ -3203,24 +3384,6 @@ export default function CostEstimator() {
       : (currentBidding?.directItems || []);
   }, [currentBidding?.directItems, activeCategoryId]);
 
-  const filteredSummary = useMemo(() => {
-    const calculateSummary = (items: any[]) => {
-      return items.reduce(
-        (acc, item) => {
-          const itemTotal = (item.qty || 0) * ((item.matRate || 0) + (item.labRate || 0) + (item.eqRate || 0));
-          return {
-            matTotal: acc.matTotal + (item.qty || 0) * (item.matRate || 0),
-            labTotal: acc.labTotal + (item.qty || 0) * (item.labRate || 0),
-            eqTotal: acc.eqTotal + (item.qty || 0) * (item.eqRate || 0),
-            grandTotal: acc.grandTotal + itemTotal,
-          };
-        },
-        { matTotal: 0, labTotal: 0, eqTotal: 0, grandTotal: 0 }
-      );
-    };
-    return calculateSummary(filteredDirectItems);
-  }, [filteredDirectItems]);
-
   const currentCategory = useMemo(() => {
     return activeCategoryId 
       ? (currentBidding?.directCategories || []).find((cat: DirectCostCategory) => cat.id === activeCategoryId)
@@ -3236,6 +3399,26 @@ export default function CostEstimator() {
     if (!filteredDirectItems || filteredDirectItems.length === 0) return [];
     return buildDirectItemRows(filteredDirectItems);
   }, [filteredDirectItems]);
+
+  const filteredSummary = useMemo(() => {
+    return filteredDirectItemRows.reduce(
+      (acc, row: any) => {
+        const item = row.item || {};
+        const qty = safeFloat(item.qty);
+        const matTotal = qty * safeFloat(item.matRate);
+        const labTotal = qty * safeFloat(item.labRate);
+        const eqTotal = qty * safeFloat(item.eqRate);
+
+        return {
+          matTotal: acc.matTotal + matTotal,
+          labTotal: acc.labTotal + labTotal,
+          eqTotal: acc.eqTotal + eqTotal,
+          grandTotal: acc.grandTotal + matTotal + labTotal + eqTotal,
+        };
+      },
+      { matTotal: 0, labTotal: 0, eqTotal: 0, grandTotal: 0 }
+    );
+  }, [filteredDirectItemRows]);
 
   const filteredVisibleDirectItemRows = useMemo(() => {
     return filteredDirectItemRows.filter(
@@ -3263,7 +3446,7 @@ export default function CostEstimator() {
               onClick={handleExportDirectCostExcel}
               className="flex items-center gap-2 px-3 py-2 rounded-lg font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-sm text-sm"
             >
-              <FileSpreadsheet size={18} /> CSV and Excel
+              <FileSpreadsheet size={18} /> Export Excel
             </button>
             <button
               onClick={() => handleDownloadTemplate("direct")}
