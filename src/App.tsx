@@ -3379,10 +3379,13 @@ export default function CostEstimator() {
 
   // Calculate filtered Direct Cost items and summary (moved outside to fix hooks order)
   const filteredDirectItems = useMemo(() => {
-    return activeCategoryId 
-      ? (currentBidding?.directItems || []).filter((item: any) => item.categoryId === activeCategoryId)
-      : (currentBidding?.directItems || []);
-  }, [currentBidding?.directItems, activeCategoryId]);
+    if (!activeCategoryId) return currentBidding?.directItems || [];
+    const fallbackCategoryId = (currentBidding?.directCategories || [])[0]?.id;
+    return (currentBidding?.directItems || []).filter((item: any) => {
+      const itemCategoryId = item.categoryId || fallbackCategoryId;
+      return itemCategoryId === activeCategoryId;
+    });
+  }, [currentBidding?.directItems, currentBidding?.directCategories, activeCategoryId]);
 
   const currentCategory = useMemo(() => {
     return activeCategoryId 
@@ -3401,13 +3404,12 @@ export default function CostEstimator() {
   }, [filteredDirectItems]);
 
   const filteredSummary = useMemo(() => {
-    return filteredDirectItemRows.reduce(
-      (acc, row: any) => {
-        const item = row.item || {};
-        const qty = safeFloat(item.qty);
-        const matTotal = qty * safeFloat(item.matRate);
-        const labTotal = qty * safeFloat(item.labRate);
-        const eqTotal = qty * safeFloat(item.eqRate);
+    return (filteredDirectItems || []).reduce(
+      (acc: { matTotal: number; labTotal: number; eqTotal: number; grandTotal: number }, item: any) => {
+        const qty = safeFloat(item?.qty);
+        const matTotal = qty * safeFloat(item?.matRate);
+        const labTotal = qty * safeFloat(item?.labRate);
+        const eqTotal = qty * safeFloat(item?.eqRate);
 
         return {
           matTotal: acc.matTotal + matTotal,
@@ -3418,7 +3420,7 @@ export default function CostEstimator() {
       },
       { matTotal: 0, labTotal: 0, eqTotal: 0, grandTotal: 0 }
     );
-  }, [filteredDirectItemRows]);
+  }, [filteredDirectItems]);
 
   const filteredVisibleDirectItemRows = useMemo(() => {
     return filteredDirectItemRows.filter(
