@@ -1518,6 +1518,63 @@ export default function CostEstimator() {
     }
   };
 
+  // --- Helpers ---
+  const buildDirectItemRows = (items: any[] = []) => {
+    const rows: any[] = [];
+    const itemById = new Map(items.map((item: any) => [item.id, item]));
+    const childrenByParentId = new Map<any, any[]>();
+    const MAX_ROW_DEPTH = 20;
+
+    items.forEach((item: any) => {
+      const parentId =
+        item.parentId && itemById.has(item.parentId) ? item.parentId : null;
+      const siblings = childrenByParentId.get(parentId) || [];
+      siblings.push(item);
+      childrenByParentId.set(parentId, siblings);
+    });
+
+    const walk = (
+      parentId: any,
+      prefix: string[] = [],
+      level = 0,
+      rootMainId: any = null,
+      ancestry: Set<any> = new Set<any>()
+    ) => {
+      if (level > MAX_ROW_DEPTH) return;
+
+      const children = childrenByParentId.get(parentId) || [];
+      children.forEach((item: any, index: number) => {
+        const displayParts = [...prefix, String(index + 1)];
+        const normalizedType =
+          level === 0 ? "main" : level === 1 ? "sub" : "secondsub";
+        const itemId = item?.id ?? `${parentId ?? "root"}_${index}`;
+        const currentRootMainId = level === 0 ? itemId : rootMainId;
+        const isCycle = ancestry.has(itemId);
+
+        rows.push({
+          item,
+          displayNo: displayParts.join("."),
+          isMain: level === 0,
+          level,
+          canAddChild: level < 2,
+          hasChildren: !isCycle && (childrenByParentId.get(itemId) || []).length > 0,
+          rootMainId: currentRootMainId,
+        });
+
+        if (isCycle) return;
+
+        const nextAncestry = new Set(ancestry);
+        nextAncestry.add(itemId);
+
+        walk(itemId, displayParts, level + 1, currentRootMainId, nextAncestry);
+      });
+    };
+
+    walk(null);
+
+    return rows;
+  };
+
   // --- Calculations ---
   const directCostSummary = useMemo(() => {
     if (!currentBidding)
@@ -1542,7 +1599,6 @@ export default function CostEstimator() {
     if (!currentBidding) return [];
 
     const categories = (currentBidding.directCategories || []) as DirectCostCategory[];
-    const fallbackCategoryId = categories[0]?.id || "default_category";
 
     const summaryMap = new Map<string, {
       id: string;
@@ -1564,29 +1620,22 @@ export default function CostEstimator() {
       });
     });
 
-    (currentBidding.directItems || []).forEach((item: any) => {
-      const categoryId = item?.categoryId || fallbackCategoryId;
-      if (!summaryMap.has(categoryId)) {
-        summaryMap.set(categoryId, {
-          id: categoryId,
-          name: "หมวดงานอื่น",
-          matTotal: 0,
-          labTotal: 0,
-          eqTotal: 0,
-          grandTotal: 0,
-        });
-      }
+    // Use tree traversal to exclude cyclic/unreachable items (same as display)
+    buildDirectItemRows(currentBidding.directItems || []).forEach((row: any) => {
+      const item = row.item;
+      const categoryId = item?.categoryId;
+      if (!categoryId || !summaryMap.has(categoryId)) return;
 
-      const row = summaryMap.get(categoryId)!;
+      const entry = summaryMap.get(categoryId)!;
       const qty = safeFloat(item?.qty);
       const mat = qty * safeFloat(item?.matRate);
       const lab = qty * safeFloat(item?.labRate);
       const eq = qty * safeFloat(item?.eqRate);
 
-      row.matTotal += mat;
-      row.labTotal += lab;
-      row.eqTotal += eq;
-      row.grandTotal += mat + lab + eq;
+      entry.matTotal += mat;
+      entry.labTotal += lab;
+      entry.eqTotal += eq;
+      entry.grandTotal += mat + lab + eq;
     });
 
     return Array.from(summaryMap.values());
@@ -1719,62 +1768,6 @@ export default function CostEstimator() {
 
   const totalProjectCost =
     financialIndirect.subTotalBeforeOH + financialIndirect.ohProfitCost;
-
-  const buildDirectItemRows = (items: any[] = []) => {
-    const rows: any[] = [];
-    const itemById = new Map(items.map((item: any) => [item.id, item]));
-    const childrenByParentId = new Map<any, any[]>();
-    const MAX_ROW_DEPTH = 20;
-
-    items.forEach((item: any) => {
-      const parentId =
-        item.parentId && itemById.has(item.parentId) ? item.parentId : null;
-      const siblings = childrenByParentId.get(parentId) || [];
-      siblings.push(item);
-      childrenByParentId.set(parentId, siblings);
-    });
-
-    const walk = (
-      parentId: any,
-      prefix: string[] = [],
-      level = 0,
-      rootMainId: any = null,
-      ancestry: Set<any> = new Set<any>()
-    ) => {
-      if (level > MAX_ROW_DEPTH) return;
-
-      const children = childrenByParentId.get(parentId) || [];
-      children.forEach((item: any, index: number) => {
-        const displayParts = [...prefix, String(index + 1)];
-        const normalizedType =
-          level === 0 ? "main" : level === 1 ? "sub" : "secondsub";
-        const itemId = item?.id ?? `${parentId ?? "root"}_${index}`;
-        const currentRootMainId = level === 0 ? itemId : rootMainId;
-        const isCycle = ancestry.has(itemId);
-
-        rows.push({
-          item,
-          displayNo: displayParts.join("."),
-          isMain: level === 0,
-          level,
-          canAddChild: level < 2,
-          hasChildren: !isCycle && (childrenByParentId.get(itemId) || []).length > 0,
-          rootMainId: currentRootMainId,
-        });
-
-        if (isCycle) return;
-
-        const nextAncestry = new Set(ancestry);
-        nextAncestry.add(itemId);
-
-        walk(itemId, displayParts, level + 1, currentRootMainId, nextAncestry);
-      });
-    };
-
-    walk(null);
-
-    return rows;
-  };
 
   // --- Handlers ---
   const handleAddRow = (setter: any, template: any) => {
@@ -3379,13 +3372,10 @@ export default function CostEstimator() {
 
   // Calculate filtered Direct Cost items and summary (moved outside to fix hooks order)
   const filteredDirectItems = useMemo(() => {
-    if (!activeCategoryId) return currentBidding?.directItems || [];
-    const fallbackCategoryId = (currentBidding?.directCategories || [])[0]?.id;
-    return (currentBidding?.directItems || []).filter((item: any) => {
-      const itemCategoryId = item.categoryId || fallbackCategoryId;
-      return itemCategoryId === activeCategoryId;
-    });
-  }, [currentBidding?.directItems, currentBidding?.directCategories, activeCategoryId]);
+    return activeCategoryId
+      ? (currentBidding?.directItems || []).filter((item: any) => item.categoryId === activeCategoryId)
+      : (currentBidding?.directItems || []);
+  }, [currentBidding?.directItems, activeCategoryId]);
 
   const currentCategory = useMemo(() => {
     return activeCategoryId 
@@ -3404,12 +3394,13 @@ export default function CostEstimator() {
   }, [filteredDirectItems]);
 
   const filteredSummary = useMemo(() => {
-    return (filteredDirectItems || []).reduce(
-      (acc: { matTotal: number; labTotal: number; eqTotal: number; grandTotal: number }, item: any) => {
-        const qty = safeFloat(item?.qty);
-        const matTotal = qty * safeFloat(item?.matRate);
-        const labTotal = qty * safeFloat(item?.labRate);
-        const eqTotal = qty * safeFloat(item?.eqRate);
+    return filteredDirectItemRows.reduce(
+      (acc: { matTotal: number; labTotal: number; eqTotal: number; grandTotal: number }, row: any) => {
+        const item = row.item || {};
+        const qty = safeFloat(item.qty);
+        const matTotal = qty * safeFloat(item.matRate);
+        const labTotal = qty * safeFloat(item.labRate);
+        const eqTotal = qty * safeFloat(item.eqRate);
 
         return {
           matTotal: acc.matTotal + matTotal,
@@ -3420,7 +3411,7 @@ export default function CostEstimator() {
       },
       { matTotal: 0, labTotal: 0, eqTotal: 0, grandTotal: 0 }
     );
-  }, [filteredDirectItems]);
+  }, [filteredDirectItemRows]);
 
   const filteredVisibleDirectItemRows = useMemo(() => {
     return filteredDirectItemRows.filter(
